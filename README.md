@@ -23,12 +23,9 @@ IEO-Orchestrator/
 │   ├── quarantine/            Registros marcados por el inspector ML
 │   └── pending_review/        Datos pendientes de revisión manual
 ├── src/                       ← Lógica de backend y análisis
-│   ├── agents/
-│   │   ├── agent_curator.py   Curador de datos vía IA
-│   │   └── agent_inspector.py Inspector de calidad vía IA
 │   ├── 00_data_scout.py       Reconocimiento y reporte de datos en raw/
 │   ├── 00_ingestion.py        Estandarización y limpieza estructural
-│   ├── 01_agent_inspector.py  Auditoría de calidad (Great Expectations)
+│   ├── 01_agent_inspector.py  Auditoría de calidad y observabilidad
 │   ├── 02_analysis.py         Cálculos, estadística y modelado
 │   ├── 03_visualization.py    Generación de gráficos estáticos
 │   ├── visualization.py       Fachada de importación para app.py
@@ -40,12 +37,13 @@ IEO-Orchestrator/
 │   ├── metodologia_*.md       Textos metodológicos (cargados por la web)
 │   ├── data_dictionary.yaml   Diccionario de variables procesadas
 │   └── descripcion_Radiales.txt
-├── assets/
-│   └── logo                   Logo de la interfaz web
-├── app.py                     Frontend (Streamlit) — plataforma web interactiva
-├── main.py                    Orquestador — ejecuta el pipeline completo
-├── lanzador.bat               Script de arranque rápido para Windows
-├── requirements.txt           Dependencias Python
+├── run/                       ← Artefactos de ejecución (CLI + web)
+│   ├── app.py                 Frontend (Streamlit) — plataforma web interactiva
+│   ├── main.py                Orquestador — ejecuta el pipeline completo
+│   ├── lanzador.bat           Script de arranque rápido para Windows
+│   ├── requirements.txt       Dependencias Python
+│   ├── assets/                Logo y recursos de la interfaz web
+│   └── README.md              Guía rápida de uso de `run/`
 └── README.md
 ```
 
@@ -78,6 +76,7 @@ data/raw/  →  00_data_scout.py  →  00_ingestion.py  →  01_agent_inspector.
 ### 1. Entorno Python
 
 ```bash
+cd run
 # Python 3.11 o 3.12 recomendado
 pip install -r requirements.txt
 ```
@@ -90,16 +89,18 @@ Coloca el archivo de datos en `data/raw/` (el pipeline espera `ExcelSirenoGijon.
 ### 3. Ejecutar el pipeline
 
 ```bash
+cd run
 python main.py
 ```
 
 ### 4. Lanzar la plataforma web
 
 ```bash
+cd run
 streamlit run app.py
 ```
 
-En Windows puedes usar `lanzador.bat` para arrancar directamente.
+En Windows puedes usar `run/lanzador.bat` para arrancar directamente.
 
 ---
 

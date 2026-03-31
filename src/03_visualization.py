@@ -1751,7 +1751,8 @@ def plot_hovmoller_termoclina(
     - Paso 5: comparativa en 3 subplots horizontales con eje Y compartido.
     """
     # Datos ya pre-agregados en capa de aplicación web para mejorar rendimiento en RAM
-    # df ahora ya tiene [col_anio, "prof_bin", col_estacion, col_temp]
+    # - Anual: df tiene [col_anio, "prof_bin", col_estacion, col_temp]
+    # - Mensual: df tiene ["fecha", "prof_bin", col_estacion, col_temp] (tiempo continuo MS)
     work = df.copy()
 
     if work.empty:
@@ -1792,7 +1793,46 @@ def plot_hovmoller_termoclina(
         )
         return fig
 
-    def _build_station_grid(est: int) -> pd.DataFrame:
+    def _build_station_grid_monthly(est: int) -> pd.DataFrame:
+        """
+        Construye una matriz perfecta (prof_bin × fecha) y rellena huecos pequeños
+        con interpolación 2D (profundidad y tiempo).
+        """
+        if "fecha" not in work.columns:
+            return pd.DataFrame()
+        sub = work[work[col_estacion] == est].copy()
+        if sub.empty:
+            return pd.DataFrame()
+        sub["fecha"] = pd.to_datetime(sub["fecha"], errors="coerce")
+        sub["prof_bin"] = pd.to_numeric(sub["prof_bin"], errors="coerce")
+        sub[col_temp] = pd.to_numeric(sub[col_temp], errors="coerce")
+        sub = sub.dropna(subset=["fecha", "prof_bin", col_temp])
+        if sub.empty:
+            return pd.DataFrame()
+
+        # Asegurar malla mensual continua (MS) y profundidad regular 1 m
+        t0 = sub["fecha"].min()
+        t1 = sub["fecha"].max()
+        full_t = pd.date_range(start=t0, end=t1, freq="MS")
+
+        z0 = float(sub["prof_bin"].min())
+        z1 = float(sub["prof_bin"].max())
+        full_z = np.arange(np.floor(z0), np.ceil(z1) + 1.0, 1.0, dtype=float)
+
+        # Agregar por celda y pivotar
+        g = sub.groupby(["prof_bin", "fecha"], as_index=False)[col_temp].mean()
+        piv = g.pivot(index="prof_bin", columns="fecha", values=col_temp)
+        piv = piv.reindex(index=full_z, columns=full_t)
+
+        # Interpolación 2D suave:
+        # 1) vertical (en profundidad)
+        piv = piv.interpolate(method="linear", axis=0, limit_area="inside")
+        # 2) temporal (en meses) — usamos 'time' sobre DatetimeIndex (transponemos)
+        piv = piv.T.interpolate(method="time", limit_area="inside").T
+
+        return piv
+
+    def _build_station_grid_annual(est: int) -> pd.DataFrame:
         sub = work[work[col_estacion] == est]
         pivot = sub.pivot(index="prof_bin", columns=col_anio, values=col_temp)
         return pivot.sort_index().sort_index(axis=1)
@@ -1806,28 +1846,30 @@ def plot_hovmoller_termoclina(
             horizontal_spacing=0.03,
         )
         for idx, est in enumerate([1, 2, 3], start=1):
-            pivot = _build_station_grid(est)
+            is_annual = resolucion == "Media Anual (Tendencia)"
+            pivot = _build_station_grid_annual(est) if is_annual else _build_station_grid_monthly(est)
             if pivot.empty:
                 continue
+            # Heatmap (más estable que contour para malla mensual)
             fig.add_trace(
-                go.Contour(
+                go.Heatmap(
                     x=pivot.columns.to_numpy(),
                     y=pivot.index.to_numpy(dtype=float),
                     z=pivot.values,
                     colorscale="RdBu_r",
-                    contours=dict(coloring="heatmap"),
+                    connectgaps=True,
                     showscale=(idx == 3),
                     colorbar=dict(title="Temp (ºC)") if idx == 3 else None,
                     hovertemplate=(
                         "Año: %{x:.0f}<br>Profundidad: %{y:.0f} m<br>Temperatura: %{z:.2f} ºC<extra></extra>"
-                        if resolucion == "Media Anual (Tendencia)"
+                        if is_annual
                         else "Fecha: %{x|%b %Y}<br>Profundidad: %{y:.0f} m<br>Temperatura: %{z:.2f} ºC<extra></extra>"
                     ),
                 ),
                 row=1,
                 col=idx,
             )
-            if resolucion == "Media Anual (Tendencia)":
+            if is_annual:
                 fig.update_xaxes(title_text="Año", tickformat="d", dtick=1, row=1, col=idx)
             else:
                 fig.update_xaxes(title_text="Fecha", row=1, col=idx)
@@ -1841,20 +1883,21 @@ def plot_hovmoller_termoclina(
         return fig
 
     est = stations[0]
-    pivot = _build_station_grid(est)
+    is_annual = resolucion == "Media Anual (Tendencia)"
+    pivot = _build_station_grid_annual(est) if is_annual else _build_station_grid_monthly(est)
     fig = go.Figure()
     if not pivot.empty:
         fig.add_trace(
-            go.Contour(
+            go.Heatmap(
                 x=pivot.columns.to_numpy(),
                 y=pivot.index.to_numpy(dtype=float),
                 z=pivot.values,
                 colorscale="RdBu_r",
-                contours=dict(coloring="heatmap"),
                 colorbar=dict(title="Temp (ºC)"),
+                connectgaps=True,
                 hovertemplate=(
                     "Año: %{x:.0f}<br>Profundidad: %{y:.0f} m<br>Temperatura: %{z:.2f} ºC<extra></extra>"
-                    if resolucion == "Media Anual (Tendencia)"
+                    if is_annual
                     else "Fecha: %{x|%b %Y}<br>Profundidad: %{y:.0f} m<br>Temperatura: %{z:.2f} ºC<extra></extra>"
                 ),
             )
@@ -1862,7 +1905,7 @@ def plot_hovmoller_termoclina(
     fig.update_layout(
         template="simple_white",
         title=f"Evolución termoclina (Hovmöller) — Estación {est}",
-        xaxis=(dict(title="Año", tickformat="d", dtick=1) if resolucion == "Media Anual (Tendencia)" else dict(title="Fecha")),
+        xaxis=(dict(title="Año", tickformat="d", dtick=1) if is_annual else dict(title="Fecha")),
         yaxis=dict(title="Profundidad (m)", autorange="reversed"),
         height=500,
     )

@@ -4,9 +4,10 @@ Módulo de Ingestión de Datos Oceanográficos (Radiales CTD)
 
 Este script actúa como el primer eslabón del pipeline de datos.
 Su objetivo es ingerir los datos reales desde ExcelSirenoGijon.xls,
-decodificar el año y el mes desde la columna ACRONIMO, filtrar la
-estación 4 (sin cobertura suficiente a 5 m) y generar un CSV limpio
-listo para la visualización.
+decodificar el año y el mes desde la columna ACRONIMO, reconstruir una
+columna temporal nativa `fecha` (YYYY-MM-01), filtrar la estación 4
+(sin cobertura suficiente a 5 m) y generar un CSV limpio listo para la
+visualización.
 
 Codificación del acrónimo
 --------------------------
@@ -19,7 +20,8 @@ Fases del script:
 2. Decodificación — ACRONIMO → columnas `mes` y `anio`.
 3. Filtrado — excluir estación 4.
 4. Limpieza estructural — cabeceras minúsculas, sin tildes.
-5. Carga — guarda `data/processed/sireno_gijon_clean.csv`.
+5. Temporalidad — crea `fecha` a partir de (anio, mes).
+6. Carga — guarda `data/processed/sireno_gijon_ctd_processed.csv` (y copia a interim).
 """
 
 import pandas as pd
@@ -27,6 +29,7 @@ from pathlib import Path
 import re
 import unicodedata
 import logging
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -88,6 +91,20 @@ def decode_acronimo(acronimo_series: pd.Series) -> pd.DataFrame:
 
     return pd.DataFrame({"mes": mes, "anio": anio})
 
+def build_fecha_from_anio_mes(
+    anio: pd.Series,
+    mes: pd.Series,
+) -> pd.Series:
+    """
+    Construye `fecha` mensual (inicio de mes) a partir de `anio` y `mes`.
+
+    Devuelve un Timestamp en el primer día de cada mes (YYYY-MM-01),
+    serializable de forma estable a CSV (ISO 8601).
+    """
+    y = pd.to_numeric(anio, errors="coerce")
+    m = pd.to_numeric(mes, errors="coerce")
+    fecha = pd.to_datetime(pd.DataFrame({"year": y, "month": m, "day": 1}), errors="coerce")
+    return fecha
 
 # ---------------------------------------------------------------------------
 # Ingesta principal
@@ -102,8 +119,12 @@ def ingest_sireno_ctd(filepath: Path | str) -> pd.DataFrame:
     2. Concatenar en un DataFrame maestro.
     3. Estandarizar cabeceras (minúsculas, sin tildes).
     4. Decodificar ACRONIMO → columnas `mes` y `anio`.
-    5. Excluir estación 4 (cobertura insuficiente a 5 m).
-    6. Exportar a `data/processed/sireno_gijon_clean.csv`.
+    5. Crear columna temporal `fecha` (YYYY-MM-01) desde (anio, mes).
+    6. Excluir estación 4 (cobertura insuficiente a 5 m).
+    7. Exportar a:
+       - `data/interim/sireno_gijon_ctd_interim.csv` (entrada del inspector)
+       - `data/processed/sireno_gijon_ctd_processed.csv` (producto mínimo usable)
+       - `data/quarantine/sireno_gijon_ctd_bad_date.csv` (filas sin fecha)
 
     Returns el DataFrame limpio.
     """
@@ -163,13 +184,21 @@ def ingest_sireno_ctd(filepath: Path | str) -> pd.DataFrame:
     df_master["mes"] = decoded["mes"]
     df_master["anio"] = decoded["anio"]
 
-    n_bad = df_master[["mes", "anio"]].isna().any(axis=1).sum()
+    # --- Fase 5: Construir `fecha` mensual (YYYY-MM-01) ---
+    df_master["fecha"] = build_fecha_from_anio_mes(df_master["anio"], df_master["mes"])
+
+    # Cuarentena para filas sin fecha (acrónimos rotos o mes/año inválidos)
+    bad_mask = df_master["fecha"].isna()
+    n_bad = int(bad_mask.sum())
     if n_bad > 0:
         logger.warning(
-            f"{n_bad} registros con acrónimo no decodificable. "
-            "Se excluirán del CSV final."
+            "%d registros sin fecha temporal válida (ACRONIMO no decodificable o mes/año inválidos). "
+            "Se enviarán a data/quarantine/ y se excluirán del CSV final.",
+            n_bad,
         )
-    df_master = df_master.dropna(subset=["mes", "anio"])
+    df_bad = df_master.loc[bad_mask].copy()
+    df_master = df_master.loc[~bad_mask].copy()
+
     df_master["mes"] = df_master["mes"].astype(int)
     df_master["anio"] = df_master["anio"].astype(int)
 
@@ -178,7 +207,7 @@ def ingest_sireno_ctd(filepath: Path | str) -> pd.DataFrame:
         f"meses disponibles: {sorted(df_master['mes'].unique())}"
     )
 
-    # --- Fase 5: Excluir estación 4 ---
+    # --- Fase 6: Excluir estación 4 ---
     col_est = next((c for c in df_master.columns if "estac" in c), None)
     if col_est:
         antes = len(df_master)
@@ -192,12 +221,28 @@ def ingest_sireno_ctd(filepath: Path | str) -> pd.DataFrame:
     else:
         logger.warning("No se encontró columna de estación. No se aplicó filtro de estación 4.")
 
-    # --- Fase 6: Guardar CSV limpio ---
+    # --- Fase 7: Guardar (interim + processed + quarantine) ---
     project_root = Path(__file__).resolve().parent.parent
-    out_path = project_root / "data" / "processed" / "sireno_gijon_clean.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df_master.to_csv(out_path, index=False)
-    logger.info(f"CSV limpio guardado en: {out_path}")
+
+    data_dir = project_root / "data"
+    processed_dir = data_dir / "processed"
+    interim_dir = data_dir / "interim"
+    quarantine_dir = data_dir / "quarantine"
+    for d in (processed_dir, interim_dir, quarantine_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    processed_path = processed_dir / "sireno_gijon_ctd_processed.csv"
+    interim_path = interim_dir / "sireno_gijon_ctd_interim.csv"
+
+    df_master.to_csv(processed_path, index=False)
+    df_master.to_csv(interim_path, index=False)
+    logger.info(f"CSV processed guardado en: {processed_path}")
+    logger.info(f"CSV interim guardado en: {interim_path}")
+
+    if n_bad > 0:
+        quarantine_path = quarantine_dir / "sireno_gijon_ctd_bad_date.csv"
+        df_bad.to_csv(quarantine_path, index=False)
+        logger.warning(f"CSV quarantine (sin fecha) guardado en: {quarantine_path}")
 
     return df_master
 

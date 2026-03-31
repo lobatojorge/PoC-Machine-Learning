@@ -2,6 +2,6 @@
   "venvPath": ".",
   "venv": "venv",
   "pythonVersion": "3.11",
-  "include": ["src", "app.py", "main.py"],
+  "include": ["src", "run"],
   "ignore": ["src/03_visualization.py"]
 }

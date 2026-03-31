@@ -62,6 +62,124 @@ def setup_directories(base_path: Path) -> dict:
         
     return dir_paths
 
+
+def audit_sesgo_estacional_esfuerzo_muestreo(df: pd.DataFrame) -> tuple[str, dict]:
+    """
+    Auditoría de esfuerzo estacional (Data Observability).
+
+    Regla:
+    - Agrupa por año y cuenta meses únicos muestreados en cada año.
+    - La mediana histórica de meses/año define la "norma operativa".
+    - Si un año difiere drásticamente (p.ej. 4 vs 11), dispara alerta.
+
+    Returns
+    -------
+    (html_block, metrics)
+      - html_block: bloque HTML (vacío si no aplica)
+      - metrics: dict con resumen numérico
+    """
+    if df.empty:
+        return "", {}
+
+    cols_lower = {str(c).lower().strip(): c for c in df.columns}
+    col_fecha = next((cols_lower[c] for c in ("fecha", "fecha_muestreo", "datetime", "date", "time") if c in cols_lower), None)
+    col_year = next((cols_lower[c] for c in ("ano", "año", "year", "anio", "yy") if c in cols_lower), None)
+
+    if col_fecha is None:
+        # Sin fecha no se puede auditar esfuerzo estacional correctamente.
+        return "", {"warning": "Sin columna de fecha; auditoría estacional omitida."}
+
+    fechas = pd.to_datetime(df[col_fecha], errors="coerce")
+    tmp = pd.DataFrame({"fecha": fechas})
+    tmp = tmp.dropna(subset=["fecha"])
+    if tmp.empty:
+        return "", {"warning": "Fechas no parseables; auditoría estacional omitida."}
+
+    tmp["anio"] = tmp["fecha"].dt.year
+    tmp["mes"] = tmp["fecha"].dt.month
+    per_year = tmp.groupby("anio")["mes"].nunique().sort_index()
+
+    if per_year.empty:
+        return "", {"warning": "Sin años válidos; auditoría estacional omitida."}
+
+    med = float(per_year.median())
+    med_int = int(round(med))
+
+    # Umbral "drástico": diferencia absoluta >= 3 meses respecto a mediana,
+    # o casos extremos tipo 4 vs 11 (capturados por el mismo umbral).
+    diff = (per_year - med).abs()
+    flagged = per_year[diff >= 3].copy()
+
+    metrics = {
+        "median_months_per_year": med,
+        "n_years": int(per_year.shape[0]),
+        "min_months": int(per_year.min()),
+        "max_months": int(per_year.max()),
+        "n_flagged_years": int(flagged.shape[0]),
+    }
+
+    if flagged.empty:
+        return "", metrics
+
+    # Tabla HTML simple
+    rows = []
+    for y, n_m in flagged.items():
+        rows.append(f"<tr><td>{int(y)}</td><td>{int(n_m)}</td><td>{med_int}</td></tr>")
+    table = (
+        "<table style='border-collapse:collapse; width: 100%;'>"
+        "<thead><tr>"
+        "<th style='text-align:left; border-bottom:1px solid #ddd; padding:6px;'>Año</th>"
+        "<th style='text-align:left; border-bottom:1px solid #ddd; padding:6px;'>Meses muestreados</th>"
+        "<th style='text-align:left; border-bottom:1px solid #ddd; padding:6px;'>Mediana histórica</th>"
+        "</tr></thead>"
+        "<tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+    html = (
+        "<h2>Alerta de Sesgo Estacional: Variación metodológica en el esfuerzo de muestreo interanual</h2>"
+        "<p>"
+        "Se ha detectado una variación marcada en el número de meses únicos muestreados por año. "
+        f"Mediana histórica: <b>{med_int}</b> meses/año. "
+        "Los años listados abajo difieren de forma drástica (|Δ| ≥ 3 meses)."
+        "</p>"
+        + table
+    )
+
+    logger.warning(
+        "Alerta de Sesgo Estacional: %d año(s) con esfuerzo mensual anómalo (mediana=%.1f).",
+        int(flagged.shape[0]),
+        med,
+    )
+
+    return html, metrics
+
+
+def _write_html_report(output_path: Path, title: str, blocks: list[str]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_blocks = [b for b in blocks if b]
+    body = "\n<hr/>\n".join(safe_blocks) if safe_blocks else "<p>Sin alertas de observabilidad.</p>"
+    html = f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{title}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; line-height: 1.45; }}
+    h1 {{ margin-top: 0; }}
+    h2 {{ margin-bottom: 6px; }}
+    p {{ color: #111827; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  {body}
+</body>
+</html>"""
+    output_path.write_text(html, encoding="utf-8")
+
 def extract_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Extrae las características numéricas para el modelo de ML de forma flexible.
@@ -222,6 +340,24 @@ def main():
         except Exception as e:
             logger.error(f"Error leyendo {input_file.name}: {e}")
             continue
+
+        # OBSERVABILIDAD: auditoría de sesgo estacional (antes de filtrar anomalías)
+        obs_html_blocks: list[str] = []
+        html_block, obs_metrics = audit_sesgo_estacional_esfuerzo_muestreo(df)
+        if html_block:
+            obs_html_blocks.append(html_block)
+
+        # Exportar reporte HTML de observabilidad (siempre, para trazabilidad)
+        report_path = dirs["reports"] / f"{input_file.stem}_observability.html"
+        _write_html_report(
+            report_path,
+            title="Observabilidad de Muestreo · Sireno Gijón CTD",
+            blocks=obs_html_blocks,
+        )
+        logger.info(
+            "Reporte de observabilidad exportado: %s",
+            report_path.relative_to(project_root),
+        )
 
         # Rescate de año para robustez del pipeline (si se perdiera en pasos previos)
         lower_map = {str(c).lower().strip(): c for c in df.columns}

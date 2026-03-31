@@ -1,20 +1,21 @@
 # ─────────────────────────────────────────────
-# Entornos virtuales
+# Entornos virtuales / Python
 # ─────────────────────────────────────────────
 .venv/
 venv/
-
-# ─────────────────────────────────────────────
-# Python
-# ─────────────────────────────────────────────
 __pycache__/
+src/__pycache__/
+run/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 
+# Streamlit cache local
+.streamlit/
+
 # ─────────────────────────────────────────────
-# Datos reales IEO — NUNCA al repositorio
+# Datos reales IEO y artefactos derivados
 # ─────────────────────────────────────────────
 data/raw/*
 data/interim/*
@@ -31,29 +32,18 @@ outputs/reports/*
 !outputs/**/.gitkeep
 
 # ─────────────────────────────────────────────
-# Informes con datos sensibles
+# Documentación/archivos locales grandes o temporales
 # ─────────────────────────────────────────────
+docs/PEC/
+docs/PEC/**/~WRL*.tmp
+informe_auditoria_ICES_files/
+docs/recon_global.md
 informe_auditoria_ICES.html
 informe_auditoria_ICES.qmd
 informe_auditoria_ICES_files/
-docs/recon_global.md
 
-# ─────────────────────────────────────────────
-# Auditoría externa (proyecto R independiente)
-# ─────────────────────────────────────────────
+# Auditoría externa (proyecto independiente)
 auditoria_advicExplorer/
-
-# ─────────────────────────────────────────────
-# Código archivado (no activo, solo local)
-# ─────────────────────────────────────────────
-src/archive/
-
-# ─────────────────────────────────────────────
-# R
-# ─────────────────────────────────────────────
-.Rhistory
-.RData
-.Rprofile
 
 # ─────────────────────────────────────────────
 # Editores y SO
@@ -63,7 +53,3 @@ src/archive/
 *.DS_Store
 Thumbs.db
 
-# ─────────────────────────────────────────────
-# Streamlit cache local
-# ─────────────────────────────────────────────
-.streamlit/

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 """
-Orquestador del pipeline Sireno Gijón.
-
-Ejecución secuencial:
-1) Reconocimiento de data/raw (reporte)
-2) Ingesta desde ExcelSirenoGijon.xls a data/interim
-3) Inspección ML + cuarentena y salida a data/processed
+run/main.py — Orquestador del pipeline Sireno Gijón.
+Ubicado en `run/` para mantener la raíz mínima.
 """
 
 import subprocess
@@ -14,7 +10,8 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+RUN_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = RUN_DIR.parent
 
 
 def _run_step(script_relative_path: str) -> None:

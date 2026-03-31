@@ -1,6 +1,7 @@
 @echo off
+cd /d "%~dp0"
 echo ===================================================
-echo   Iniciando Arquitectura de Datos Oceánicos...
+echo   Iniciando Arquitectura de Datos Oce�nicos...
 echo ===================================================
 
 echo.
@@ -22,3 +23,4 @@ echo [3/3] Levantando el panel de Streamlit...
 streamlit run app.py
 
 pause
+

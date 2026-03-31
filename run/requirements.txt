@@ -9,3 +9,5 @@ scipy
 seaborn
 statsmodels
 streamlit
+xlrd
+

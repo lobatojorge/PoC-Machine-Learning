@@ -1,0 +1,13 @@
+# Reglas específicas para la carpeta run/ (entornos y artefactos locales)
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Cache Streamlit local
+.streamlit/
+
