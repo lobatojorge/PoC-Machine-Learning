@@ -1,0 +1,397 @@
+T
+´
+ı
+t
+ulo
+ del trabajo completo y tan largo como sea necesario
+T
+´
+ı
+t
+ulo
+ del trabajo completo y tan largo como sea necesario
+Jorge Lobato Menéndez
+A
+´
+rea
+ 
+del
+ 
+rabajo 
+Máster en Bioinformática y Bioestadística
+Nombre
+ 
+del
+ 
+director/a
+ 
+de
+ 
+TF:
+Iván Contreras
+Nombre
+ 
+del/de
+ 
+la
+ 
+PRA:
+Antoni Pérez
+27 de marzo de 2026
+Jorge Lobato Menéndez
+A
+´
+rea
+ 
+del
+ 
+rabajo 
+Máster en Bioinformática y Bioestadística
+Nombre
+ 
+del
+ 
+director/a
+ 
+de
+ 
+TF:
+Iván Contreras
+Nombre
+ 
+del/de
+ 
+la
+ 
+PRA:
+Antoni Pérez
+27 de marzo de 2026
+T´ıtulo
+ 
+muy
+ corto
+T´ıtulo
+ 
+muy
+ corto
+Esta
+ 
+obra
+ 
+esta
+ 
+sujeta
+ 
+a
+ 
+una
+ 
+licencia
+ 
+de
+ 
+Reconocimiento
+https://creativecommons.org/licenses/by-
+nc/3.0/es/
+Ficha
+ 
+Del
+ 
+Trabajo
+ 
+Final
+T
+´
+ı
+t
+ulo
+ 
+del
+ 
+trabajo:
+T´ıtulo
+ 
+del
+ 
+trabajo
+ 
+completo
+ 
+y
+ 
+tan
+ 
+largo
+ 
+como
+ 
+sea
+ 
+nece-
+sario
+Nombre
+ 
+del
+ 
+autor/a:
+Nombre
+ 
+Estudiando
+ 
+Estudiante
+Nombre
+ 
+del
+ 
+director/a
+ 
+de
+ 
+TF:
+Nombre
+ 
+Tutor
+ 
+Tutora
+Nombre
+ 
+del/de
+ 
+la
+ 
+PRA:
+Antoni Pérez
+Fecha
+ 
+de
+ 
+entrega:
+Xxx 
+mayo 
+de
+ 
+2026
+Titulaci
+o
+´
+n
+ 
+o
+ 
+programa:
+Máster en Bioinformática y Bioestadística
+A
+´
+rea
+ 
+del
+ 
+trabajo
+ 
+final:
+A
+´
+rea
+ 
+del
+ 
+trabajo
+Idioma
+ 
+del
+ 
+trabajo:
+Español
+Palabras
+ 
+clave:
+palabra,
+ 
+clave,
+ 
+trabajo
+M
+a
+´
+x
+imo
+ 
+250
+ 
+palabras,
+ 
+con
+ 
+la
+ 
+finalidad,
+ 
+contexto
+ 
+de
+ 
+aplicaci
+o
+´
+n,
+ 
+metodolog´ıa,
+ 
+resul-
+tados
+ 
+y
+ 
+conclusiones
+ 
+del
+ 
+trabajo.
+Resumen
+ 
+del
+ 
+trabajo
+M
+a
+´
+x
+imo
+ 
+250
+ 
+palabras,
+ 
+con
+ 
+la
+ 
+finalidad,
+ 
+contexto
+ 
+de
+ 
+aplicaci
+o
+´
+n,
+ 
+metodolog´ıa,
+ 
+resul-
+tados
+ 
+y
+ 
+conclusiones
+ 
+del
+ 
+trabajo.
+Resumen
+ 
+del
+ 
+trabajo
+A
+ 
+maximum
+ 
+of
+ 
+250
+ 
+words,
+ 
+detailing
+ 
+the
+ 
+purpose,
+ 
+contexto
+ 
+of
+ 
+application,
+ 
+methodo-
+logy,
+ 
+results
+ 
+and
+ 
+conclusiones
+ 
+of
+ 
+the
+ 
+work.
+Abstract
+A
+ 
+maximum
+ 
+of
+ 
+250
+ 
+words,
+ 
+detailing
+ 
+the
+ 
+purpose,
+ 
+contexto
+ 
+of
+ 
+application,
+ 
+methodo-
+logy,
+ 
+results
+ 
+and
+ 
+conclusiones
+ 
+of
+ 
+the
+ 
+work.
+Abstract
+Índice general
+1. Introducción
+1.1 Contexto y justificación del trabajo
+1.2 Objetivos del trabajo
+1.3 Impacto en sostenibilidad, ético-social y de diversidad
+1.4 Enfoque y método seguido
+1.5 Planificación del trabajo
+1.6 Breve sumario de productos obtenidos
+1.7 Breve descripción de los otros capítulos de la memoria
+1.8 Declaración sobre el uso de inteleigencia artificial generativa
+2. Estado del arte
+3. Resultados
+4. Discusión
+5. Valoración económica
+7. Conclusiones y trabajos futuros
+7.1 Conclusiones
+7.2 Líneas de futuro
+7.3 Seguimiento de la planificación
+8. Glosario
+9. Bibliografía
+A. Ejemplo de anexo
+    A.1 Anexo 1
+Índice de figuras
+...
+Capítulo 1
+Introducción
+1.1 Contexto y justificación del trabajo

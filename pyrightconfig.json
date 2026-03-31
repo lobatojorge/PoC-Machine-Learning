@@ -1,0 +1,7 @@
+{
+  "venvPath": ".",
+  "venv": "venv",
+  "pythonVersion": "3.11",
+  "include": ["src", "app.py", "main.py"],
+  "ignore": ["src/03_visualization.py"]
+}

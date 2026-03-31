@@ -1,0 +1,17 @@
+- Título: Series temporales de oceanografía en el norte de España (2016-2020)
+
+- Acrónimo: RADIALES-20
+
+- Investigador principal: Bode Riestra, Antonio (C. O. Coruña)
+
+- Fecha inicio: 01/01/2016
+
+- Fecha final: 31/12/2020
+
+
+- Resumen:
+
+
+El proyecto RADIALES, operativo desde el año 1991, constituye un observatorio del ecosistema pelágico en la plataforma continental y océano adyacente del NO de España. En este proyecto se miden sistemáticamente variables oceanográficas (temperatura, salinidad, nutrientes, oxígeno) y de las comunidades planctónicas (plancton microbiano, fitoplancton, zooplancton e ictioplancton) en 5 transectos localizados en Santander, Gijón, Cudillero, A Coruña y Vigo. Los muestreos y análisis se llevan a cabo siguiendo protocolos de trabajo comunes con una periodicidad mensual. Cada transecto incluye el muestreo de estaciones, que se corresponden con características costeras, neríticas y ahora también oceánicas. El diseño de muestreo está orientado a obtener una serie histórica de datos oceanográficos que, tratada estadísticamente, permita extraer los distintos componentes de variabilidad natural y antropogénica y sus tendencias. En esta nueva fase (2016-2020), además de mantener la serie histórica de observaciones, el proyecto se centrará en analizar de forma específica la variabilidad del sistema del carbono y de la diversidad funcional del plancton en relación a los principales factores de variabilidad ambiental, especialmente en relación a las variaciones en el afloramiento.
+
+Este proyecto de investigación a largo plazo del ecosistema permite desarrollar otros proyectos de objetivos a corto plazo (financiados con fondos externos al IEO) utilizando como base su infraestructura de muestreo, análisis y base de datos. Asimismo, la información derivada del proyecto seguirá contribuyendo a la monitorización del océano requerida para la aplicación de diversas políticas de gestión ambiental, especialmente las relacionadas con la Directiva Marco de la UE para la Estrategia Marina (MSFD).

@@ -1,0 +1,7 @@
+# Diccionario Semántico y Biológico
+# Variables no reconocidas como CTD que hagan match aquí se interpretarán como biología/muestreo especial
+Synech: "Cianobacterias Synechococcus (células/mL)"
+Prochl: "Cianobacterias Prochlorococcus (células/mL)"
+Picoeuc: "Picoeucariotas (células/mL)"
+Microzooplancton: "Abundancia de microzooplancton"
+Nauplios: "Nauplios de copépodos"
