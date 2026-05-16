@@ -1,27 +1,34 @@
-## Carpeta `run/` — Ejecución del proyecto
+# Carpeta `run/` — Ejecución
 
-Esta carpeta agrupa **todos los artefactos necesarios para ejecutar** el repositorio sin ruido en la raíz.
+Punto de entrada del **pipeline Cudillero** y del **visor Streamlit**.
 
-- `app.py`: entrada de la aplicación **Streamlit** (visor interactivo).
-- `main.py`: **orquestador** del pipeline (ingesta → inspección → análisis).
-- `lanzador.bat`: script de conveniencia para Windows que:
-  - crea/activa un entorno virtual `venv/`,
-  - instala `requirements.txt`,
-  - lanza `streamlit run app.py`.
-- `requirements.txt`: lista de dependencias Python del proyecto.
-- `.gitignore`: reglas de exclusión aplicadas a esta carpeta (útil si se generan artefactos locales aquí).
-- `assets/`: recursos estáticos necesarios para la UI (por ejemplo, `logo.webp` usado como icono de la app).
+| Archivo | Rol |
+|---------|-----|
+| `main.py` | Pipeline completo → `outputs/runs/<run_id>/` |
+| `app.py` | Visor Radiales Cudillero (lee Parquet de la última corrida) |
+| `pipeline_runs.py` | Resolución de corridas y carga para el visor |
+| `build_processed_from_raw.py` | CSV largo en `data/raw/` → `data/processed/perfiles_all.csv` |
+| `ieo_cli.py` | Alias CLI: `python run/ieo_cli.py run` |
+| `requirements.txt` | Dependencias del visor |
+| `lanzador.bat` | Arranque rápido Windows (venv + Streamlit) |
 
-### Uso rápido
-
-Desde la raíz del repo:
+## Demo oficial (reunión / TRL 4)
 
 ```bash
-cd run
-python -m venv venv         # si no existe
-venv\Scripts\activate       # Windows
-pip install -r requirements.txt
-python main.py              # Ejecuta el pipeline completo
-streamlit run app.py        # Lanza la interfaz web
+# Desde la raíz del repo
+pip install -r run/requirements.txt
+python run/main.py
+streamlit run run/app.py
 ```
 
+Entrada del pipeline: `data/processed/perfiles_all.csv` (ver README raíz).
+
+Smoke sin re-ejecutar pipeline:
+
+```bash
+python scripts/e2e_smoke.py --skip-pipeline
+```
+
+## Nota sobre código legacy
+
+Los scripts `src/00_*.py` (Gijón / Excel) no son la ruta de demo actual. Usar `run/main.py` + paquete `src/ieo/`.
