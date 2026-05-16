@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "cnv"]
+  pull_request:
+
+jobs:
+  test:
+    name: "Tests · Python 3.11 · Ubuntu"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias de producción
+        run: pip install --upgrade pip && pip install -r run/requirements.txt
+
+      - name: Instalar dependencias de test
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        # En Ubuntu CI no hay restricciones de tmp_path; se ejecutan todos los tests.
+        # test_pipeline_runs usa time.sleep(0.05) para separar mtime: funciona en Linux.
+        run: pytest tests/ -v --tb=short --override-ini="addopts="

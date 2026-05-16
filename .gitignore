@@ -53,3 +53,11 @@ auditoria_advicExplorer/
 *.DS_Store
 Thumbs.db
 
+# ─────────────────────────────────────────────
+# Tests y CI local
+# ─────────────────────────────────────────────
+.pytest_tmp/
+.pytest_cache/
+*.cover
+htmlcov/
+

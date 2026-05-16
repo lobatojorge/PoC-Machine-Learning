@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 """
-run/main.py — Orquestador del pipeline Sireno Gijón.
-Ubicado en `run/` para mantener la raíz mínima.
+run/main.py — Orquestador del pipeline (producción).
+
+Nota práctica
+-------------
+Este archivo existe para que un usuario inexperto pueda ejecutar el pipeline
+con un solo comando, pero la lógica real vive en `src/ieo/`.
 """
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,40 +17,43 @@ RUN_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = RUN_DIR.parent
 
 
-def _run_step(script_relative_path: str) -> None:
-    script_path = PROJECT_ROOT / script_relative_path
-    cmd = [sys.executable, str(script_path)]
-    print(f"\n[PIPELINE] Ejecutando: {script_relative_path}")
-    completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Fallo en el paso '{script_relative_path}' con código {completed.returncode}."
-        )
-
-
 def main() -> None:
-    steps = [
-        "src/00_data_scout.py",
-        "src/00_ingestion.py",
-        "src/01_agent_inspector.py",
-        "src/02_analysis.py",
-    ]
-
     print("\n" + "=" * 80)
-    print(" ORQUESTADOR SIRENO GIJÓN ".center(80, "="))
+    print(" ORQUESTADOR (PRODUCCIÓN) ".center(80, "="))
     print("=" * 80)
-    print("Fuente esperada: data/raw/ExcelSirenoGijon.xls")
+    print("Entrada: `data/processed/perfiles_all.csv` (p. ej. generado desde raw con `python run/build_processed_from_raw.py`).")
+    print("Nota: el CSV largo en `data/raw/` se materializa a processed con `python run/build_processed_from_raw.py`.")
     print("-" * 80)
 
-    for step in steps:
-        _run_step(step)
+    # Import diferido: permite ejecutar desde `run/` sin instalar paquete.
+    # Este repo usa “src layout”, por eso añadimos `PROJECT_ROOT/src` al path.
+    src_dir = PROJECT_ROOT / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    try:
+        from ieo.observability.session_audit import append_public_run_journal_entry  # noqa: E402
+
+        audit_path = append_public_run_journal_entry(
+            PROJECT_ROOT,
+            kind="pipeline_cli",
+            extra={"nota": "Inicio de run/main.py; detalle en consola y en outputs/runs/<run_id>/"},
+        )
+        print(f"Registro de auditoría (apéndice): {audit_path}")
+    except Exception as exc:
+        print(f"[aviso] No se pudo escribir el registro de auditoría: {type(exc).__name__}: {exc}")
+
+    from ieo.cli import run_pipeline  # noqa: E402
+    exit_code = int(run_pipeline(project_root=PROJECT_ROOT))
 
     print("-" * 80)
-    print("[OK] Pipeline completado.")
-    print("Resultado principal: data/processed/sireno_gijon_ctd_processed.csv")
-    print("Cuarentena ML:      data/quarantine/")
-    print("Reporte de raw:     outputs/reports/recon_data_raw.txt")
+    if exit_code == 0:
+        print("[OK] Pipeline completado.")
+        print("Revisa outputs/runs/<run_id>/ para datos y reportes.")
+    else:
+        print(f"[!!] Pipeline terminó con código: {exit_code}")
+        print("Revisa outputs/runs/<run_id>/checkpoints/ para entender qué falló.")
     print("=" * 80 + "\n")
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
