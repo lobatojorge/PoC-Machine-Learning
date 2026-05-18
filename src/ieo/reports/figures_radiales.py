@@ -98,26 +98,77 @@ def parse_radial_station_coords_from_methodology(
     return found
 
 
-def build_cudillero_radial_map_figure(
-    stations: list[dict[str, float | int | str]],
+def build_cantabrico_radials_overview_map(
+    cities: list[dict[str, float | int | str]],
+    *,
+    selected_radial_id: str | None = None,
 ) -> go.Figure:
     """
-    Mapa interactivo de la radial Cudillero.
+    Mapa del Cantábrico con una marca por radial (posición media de los ``.cnv``).
 
-    Colores graduados del azul claro (costa, E1) al azul marino profundo (talud, E4).
-    La línea del transecto conecta las estaciones ordenadas por latitud.
-
-    Parámetros
-    ----------
-    stations : list[dict]
-        Lista de estaciones con claves ``estacion`` (int), ``lat``, ``lon``, ``nombre``.
-        Habitualmente generada por ``parse_radial_station_coords_from_methodology``.
-
-    Devuelve
-    --------
-    go.Figure
-        Figura Plotly lista para ``fig.show()`` o ``st.plotly_chart(fig)``.
+    ``customdata`` lleva ``radial_id`` para selección en Streamlit.
     """
+    center_lat, center_lon, zoom = 43.45, -5.35, 6.8
+    if cities:
+        lats = [float(c["lat"]) for c in cities]
+        lons = [float(c["lon"]) for c in cities]
+        center_lat = sum(lats) / len(lats)
+        center_lon = sum(lons) / len(lons)
+
+    fig = go.Figure()
+    if cities:
+        lats = [float(c["lat"]) for c in cities]
+        lons = [float(c["lon"]) for c in cities]
+        labels = [str(c["label"]) for c in cities]
+        rids = [str(c["radial_id"]) for c in cities]
+        counts = [int(c.get("n_cnv", 0)) for c in cities]
+        sizes = [28 + min(n, 400) // 25 for n in counts]
+        colors = [
+            "#00BFFF" if rid == selected_radial_id else "#2b6cb0"
+            for rid in rids
+        ]
+        hover = [
+            f"<b>{lbl}</b><br>{n:,} perfiles .cnv con coordenadas"
+            for lbl, n in zip(labels, counts)
+        ]
+        fig.add_trace(
+            go.Scattermap(
+                lat=lats,
+                lon=lons,
+                mode="markers+text",
+                text=labels,
+                textposition="top center",
+                textfont=dict(size=11, color="#1e3a5f", family="Arial, sans-serif"),
+                marker=dict(size=sizes, color=colors, opacity=0.92),
+                customdata=np.array(rids).reshape(-1, 1),
+                hovertext=hover,
+                hovertemplate="%{hovertext}<extra></extra>",
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        map=dict(
+            style="carto-positron",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=zoom,
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=420,
+        paper_bgcolor="#f8fafc",
+        plot_bgcolor="#f8fafc",
+        showlegend=False,
+        uirevision="cantabrico_overview",
+    )
+    return fig
+
+
+def build_radial_transect_map_figure(
+    stations: list[dict[str, float | int | str]],
+    *,
+    uirevision: str = "radial_transect",
+) -> go.Figure:
+    """Mapa de estaciones de una radial (transecto + marcadores numerados)."""
     center_lat, center_lon = 43.689, -6.150
     zoom = 8.6
     if stations:
@@ -128,19 +179,16 @@ def build_cudillero_radial_map_figure(
         lat_span = max(lats) - min(lats)
         lon_span = max(lons) - min(lons)
         span = max(lat_span * 1.35, lon_span * 1.6, 0.06)
-        zoom = float(np.clip(11.2 - span * 18.0, 7.8, 10.5))
+        zoom = float(np.clip(11.2 - span * 18.0, 7.5, 10.8))
 
     fig = go.Figure()
 
-    # Línea del transecto
     if len(stations) >= 2:
         ordered = sorted(stations, key=lambda s: float(s["lat"]))
-        line_lat = [float(s["lat"]) for s in ordered]
-        line_lon = [float(s["lon"]) for s in ordered]
         fig.add_trace(
             go.Scattermap(
-                lat=line_lat,
-                lon=line_lon,
+                lat=[float(s["lat"]) for s in ordered],
+                lon=[float(s["lon"]) for s in ordered],
                 mode="lines",
                 line=dict(color="rgba(30,58,95,0.4)", width=2),
                 hoverinfo="skip",
@@ -149,20 +197,13 @@ def build_cudillero_radial_map_figure(
         )
 
     if stations:
-        _DEPTH_LABELS = {1: "E1CU", 2: "E2CU", 3: "E3CU", 4: "E4CU"}
-        _DEPTH_COLORS = ["#5ea8d4", "#2b6cb0", "#1a3f6f", "#0c1f3f"]
-
+        _DEPTH_COLORS = ["#5ea8d4", "#2b6cb0", "#1a3f6f", "#0c1f3f", "#081828"]
         lats = [float(s["lat"]) for s in stations]
         lons = [float(s["lon"]) for s in stations]
         ids = [int(s["estacion"]) for s in stations]
-        colors = [_DEPTH_COLORS[min(i - 1, 3)] for i in ids]
-        sizes_scale = [22, 24, 26, 28]
-        sizes_mapped = [sizes_scale[min(i - 1, 3)] for i in ids]
-
-        hover_texts = [
-            f"<b>E{i} — {_DEPTH_LABELS.get(i, str(s['nombre']))}</b>"
-            for i, s in zip(ids, stations)
-        ]
+        colors = [_DEPTH_COLORS[min(i - 1, len(_DEPTH_COLORS) - 1)] for i in ids]
+        sizes_mapped = [22 + min(i, 8) for i in ids]
+        hover_texts = [f"<b>{s.get('nombre', f'Estación {i}')}</b>" for i, s in zip(ids, stations)]
 
         fig.add_trace(
             go.Scattermap(
@@ -172,12 +213,7 @@ def build_cudillero_radial_map_figure(
                 text=[str(i) for i in ids],
                 textposition="middle center",
                 textfont=dict(size=11, color="#ffffff", family="Arial, sans-serif"),
-                marker=dict(
-                    size=sizes_mapped,
-                    color=colors,
-                    symbol="circle",
-                    opacity=0.95,
-                ),
+                marker=dict(size=sizes_mapped, color=colors, symbol="circle", opacity=0.95),
                 customdata=np.array(ids).reshape(-1, 1),
                 hovertext=hover_texts,
                 hovertemplate="%{hovertext}<extra></extra>",
@@ -190,14 +226,19 @@ def build_cudillero_radial_map_figure(
             style="carto-positron",
             center=dict(lat=center_lat, lon=center_lon),
             zoom=zoom,
-            bearing=0,
-            pitch=0,
         ),
         margin=dict(l=0, r=0, t=0, b=0),
         height=460,
         paper_bgcolor="#f8fafc",
         plot_bgcolor="#f8fafc",
         showlegend=False,
-        uirevision="cudillero_map",
+        uirevision=uirevision,
     )
     return fig
+
+
+def build_cudillero_radial_map_figure(
+    stations: list[dict[str, float | int | str]],
+) -> go.Figure:
+    """Alias de compatibilidad → :func:`build_radial_transect_map_figure`."""
+    return build_radial_transect_map_figure(stations, uirevision="cudillero_map")

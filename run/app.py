@@ -65,14 +65,16 @@ from pipeline_runs import (
     resolve_run_root_for_ui,
 )
 from ieo.reports.figures_radiales import (
-    build_cudillero_radial_map_figure,
+    build_cantabrico_radials_overview_map,
+    build_radial_transect_map_figure,
     parse_radial_station_coords_from_methodology,
 )
+from ieo.reports.radial_cnv_geo import build_radial_geo_index, stations_to_plotly_dicts
 
 import streamlit as st
 
 st.set_page_config(
-    page_title="Radiales Cudillero · IEO",
+    page_title="Radiales Cantábrico · IEO",
     layout="wide",
     page_icon=str(RUN_DIR / "assets" / "logo.webp"),
 )
@@ -380,6 +382,76 @@ def load_cudillero_pipeline_viewer(run_root_str: str, cache_token: str) -> Pipel
     return load_pipeline_viewer_data(Path(run_root_str))
 
 
+@st.cache_data(show_spinner="Indexando radiales en data/cnv/…")
+def _cached_radial_geo_index(project_root_str: str, cache_token: str) -> dict:
+    _ = cache_token
+    idx = build_radial_geo_index(Path(project_root_str))
+    return {
+        "cities": [
+            {
+                "radial_id": c.radial_id,
+                "label": c.label,
+                "lat": c.lat,
+                "lon": c.lon,
+                "n_cnv": c.n_cnv,
+            }
+            for c in idx.cities
+        ],
+        "stations_by_radial": {
+            rid: stations_to_plotly_dicts(sts)
+            for rid, sts in idx.stations_by_radial.items()
+        },
+        "n_cnv_scanned": idx.n_cnv_scanned,
+        "n_with_coords": idx.n_with_coords,
+    }
+
+
+def _cnv_index_cache_token(project_root: Path) -> str:
+    cnv_d = project_root / "data" / "cnv"
+    if not cnv_d.is_dir():
+        return "missing"
+    files = list(cnv_d.rglob("*.cnv"))
+    if not files:
+        return "empty"
+    total_mtime = max(p.stat().st_mtime_ns for p in files)
+    return f"{len(files)}:{total_mtime}"
+
+
+@st.cache_data(show_spinner="Cargando perfiles .cnv de la radial…", ttl=3600)
+def _cached_radial_cnv_dataframe(project_root_str: str, radial_id: str, cache_token: str) -> tuple[pd.DataFrame, dict]:
+    _ = cache_token
+    from ieo.viz.load_radial_cnv_profiles import load_radial_profiles_pandas, max_files_from_env  # noqa: PLC0415
+
+    df, stats = load_radial_profiles_pandas(
+        Path(project_root_str),
+        radial_id,
+        max_files=max_files_from_env(),
+    )
+    return df, stats
+
+
+def _point_customdata_scalar(point: dict, default: str | None = None) -> str | None:
+    cd = point.get("customdata")
+    if cd is None:
+        return default
+    if isinstance(cd, (list, tuple)) and cd:
+        return str(cd[0])
+    if isinstance(cd, np.ndarray) and cd.size > 0:
+        return str(cd.flatten()[0])
+    return str(cd) if cd is not None else default
+
+
+def _map_selection_points(raw_map: object) -> list:
+    if raw_map is None:
+        return []
+    try:
+        if isinstance(raw_map, dict):
+            return (raw_map.get("selection") or {}).get("points", [])
+        return (getattr(raw_map, "selection", None) or {}).get("points", [])
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Hitos del investigador
 # ---------------------------------------------------------------------------
@@ -530,59 +602,165 @@ def _monthly_value_at_depth(
     )
 
 
-def render_radiales_cudillero() -> None:
-    """Vista Radiales Cudillero: mapa, metodología y Marcos+ATAC desde la ejecución del pipeline elegida en la barra lateral."""
+def render_radiales_explorer() -> None:
+    """Hub Radiales: localidad (mapa) → estación → series Marcos+ATAC."""
 
+    if "radial_id" not in st.session_state:
+        st.session_state["radial_id"] = None
     if "estacion_seleccionada_csv" not in st.session_state:
         st.session_state["estacion_seleccionada_csv"] = 1
 
     _rc = _load_radial_contract_mod()
-
-    valid_runs = list_valid_run_roots(PROJECT_ROOT)
-    if not valid_runs:
-        st.warning(
-            "No hay datos procesados en el sistema. Coloca ficheros `.cnv` en `data/cnv/` "
-            "y ejecuta `python run/main.py`."
-        )
-        st.stop()
-
-    choice = st.session_state.get("pipeline_run_select", LATEST_SENTINEL)
-    run_root = resolve_run_root_for_ui(PROJECT_ROOT, choice)
-    if run_root is None:
-        st.warning("No hay datos procesados en el sistema. Ejecuta el pipeline principal primero.")
-        st.stop()
-
-    cache_tok = clean_parquet_cache_token(run_root)
-    pipe = load_cudillero_pipeline_viewer(str(run_root.resolve()), cache_tok)
-    if pipe is None:
-        st.warning("No hay datos procesados en el sistema. Ejecuta el pipeline principal primero.")
-        st.stop()
-
-    md_method = _cached_cudillero_methodology_text()
-    stations_geo = parse_radial_station_coords_from_methodology(md_method)
-
-    # ── Datos: filtro radial + fechas del banner (mismo ámbito que el visor) ─
     _bootstrap_ieo_repo_path()
     from ieo.radiales_catalog import RADIAL_ID_CUDILLERO, filter_dataframe_to_radial  # noqa: PLC0415
 
-    df_c, n_other_radial = filter_dataframe_to_radial(pipe.df_clean, RADIAL_ID_CUDILLERO)
-    if n_other_radial > 0:
-        st.warning(
-            f"Se excluyeron **{n_other_radial:,}** filas de otras radiales en el Parquet de esta ejecución. "
-            "El visor muestra solo Cudillero."
+    geo = _cached_radial_geo_index(
+        str(PROJECT_ROOT.resolve()),
+        _cnv_index_cache_token(PROJECT_ROOT),
+    )
+    cities: list[dict] = geo.get("cities", [])
+    stations_by_radial: dict[str, list] = geo.get("stations_by_radial", {})
+
+    st.markdown(
+        """
+<div style="background:linear-gradient(135deg,#0E1626 0%,#080D16 100%);
+border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:28px 32px 20px;margin-bottom:16px;">
+  <span style="display:inline-flex;padding:4px 10px;border-radius:9999px;
+border:1px solid rgba(0,191,255,0.25);background:rgba(0,191,255,0.08);
+font-family:'JetBrains Mono',monospace;font-size:0.65rem;font-weight:700;
+text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin-bottom:14px;">
+Radiales · Cantábrico</span>
+  <h1 style="font-family:'Plus Jakarta Sans',sans-serif;font-size:2rem;font-weight:800;
+color:#E2EAF4;margin:0 0 6px;">Radiales oceánicas</h1>
+  <p style="font-size:0.88rem;color:#A8BBCF;margin:0;">
+    Elige localidad en el mapa · luego estación · visualiza temperatura y salinidad a 5&nbsp;m
+  </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if not cities:
+        st.warning("No hay radiales con coordenadas en `data/cnv/`. Coloca ficheros `.cnv` y recarga.")
+        st.stop()
+
+    st.markdown(
+        "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
+        "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin:12px 0 8px;'>"
+        "1 · Localidad</p>",
+        unsafe_allow_html=True,
+    )
+
+    city_labels = {c["radial_id"]: str(c["label"]) for c in cities}
+    city_options = [c["radial_id"] for c in cities]
+    prev_radial = st.session_state.get("radial_id")
+
+    with st.sidebar:
+        st.markdown("### Radial")
+        pick = st.selectbox(
+            "Localidad",
+            options=[""] + city_options,
+            format_func=lambda x: "— elige —" if not x else city_labels.get(x, x),
+            index=(city_options.index(prev_radial) + 1) if prev_radial in city_options else 0,
+            key="sidebar_radial_pick",
         )
-    if df_c.empty:
+        if pick and pick != prev_radial:
+            st.session_state["radial_id"] = pick
+            st.session_state.pop("station_tab_temp", None)
+            st.session_state.pop("station_tab_sal", None)
+
+    fig_overview = build_cantabrico_radials_overview_map(
+        cities,
+        selected_radial_id=st.session_state.get("radial_id"),
+    )
+    st.caption("Haz clic en una localidad del mapa (o elige en la barra lateral).")
+    st.plotly_chart(
+        fig_overview,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="points",
+        key="radial_overview_map",
+        config={"displayModeBar": False},
+    )
+
+    for pt in _map_selection_points(st.session_state.get("radial_overview_map")):
+        rid = _point_customdata_scalar(pt)
+        if rid and rid in city_labels:
+            if st.session_state.get("radial_id") != rid:
+                st.session_state["radial_id"] = rid
+                st.session_state.pop("station_tab_temp", None)
+                st.session_state.pop("station_tab_sal", None)
+            break
+
+    radial_id = st.session_state.get("radial_id")
+    if not radial_id or radial_id not in city_labels:
+        st.info("Selecciona **Cudillero**, **Gijón**, **Santander** o **A Coruña** en el mapa.")
+        st.stop()
+
+    radial_label = city_labels[radial_id]
+    pipe: PipelineViewerLoadResult | None = None
+    cnv_stats: dict = {}
+    data_source = "cnv"
+
+    if radial_id == RADIAL_ID_CUDILLERO:
+        run_root = resolve_run_root_for_ui(
+            PROJECT_ROOT,
+            st.session_state.get("pipeline_run_select", LATEST_SENTINEL),
+        )
+        if run_root is not None:
+            cache_tok = clean_parquet_cache_token(run_root)
+            pipe = load_cudillero_pipeline_viewer(str(run_root.resolve()), cache_tok)
+
+    if pipe is not None and radial_id == RADIAL_ID_CUDILLERO:
+        df_c, n_other_radial = filter_dataframe_to_radial(pipe.df_clean, RADIAL_ID_CUDILLERO)
+        if n_other_radial > 0:
+            st.warning(
+                f"Se excluyeron **{n_other_radial:,}** filas de otras radiales en el Parquet."
+            )
+        col_temp, col_sal, col_prof = pipe.col_temp, pipe.col_sal, pipe.col_prof
+        data_source = "pipeline"
+        n_anom_banner = len(pipe.df_anomalies)
+        n_clean_banner = len(pipe.df_clean)
+    else:
+        df_c, cnv_stats = _cached_radial_cnv_dataframe(
+            str(PROJECT_ROOT.resolve()),
+            radial_id,
+            _cnv_index_cache_token(PROJECT_ROOT),
+        )
+        if radial_id == RADIAL_ID_CUDILLERO and pipe is None:
+            st.caption(
+                "Cudillero: lectura directa de `.cnv` (sin Parquet). "
+                "Ejecuta `python run/main.py` para anomalías."
+            )
+        col_temp = next((c for c in df_c.columns if "temp" in str(c).lower()), "temperatura_c")
+        col_sal = next(
+            (c for c in df_c.columns if "salin" in str(c).lower() or str(c).lower() == "sal"),
+            "salinidad_psu",
+        )
+        col_prof = next((c for c in df_c.columns if "prof" in str(c).lower()), "profundidad_m")
+        n_anom_banner = 0
+        n_clean_banner = len(df_c)
+
+    if df_c is None or df_c.empty:
         st.error(
-            "No hay filas utilizables en esta ejecución del pipeline. "
-            "Vuelve a ejecutar `python run/main.py` y elige la ejecución más reciente en la barra lateral."
+            f"No hay perfiles CTD para **{radial_label}**. "
+            f"En disco: {cnv_stats.get('n_radial_clasificados', '—')} `.cnv` clasificados."
         )
         st.stop()
 
+    md_method = ""
+    stations_geo = list(stations_by_radial.get(radial_id, []))
+    if radial_id == RADIAL_ID_CUDILLERO:
+        md_method = _cached_cudillero_methodology_text()
+        md_stations = parse_radial_station_coords_from_methodology(md_method)
+        if md_stations:
+            stations_geo = md_stations
+
     _est_vals = sorted(df_c["estacion"].dropna().unique().astype(int).tolist())
-    if _est_vals and not all(e in (1, 2, 3) for e in _est_vals):
+    if _est_vals and radial_id == RADIAL_ID_CUDILLERO and not all(e in (1, 2, 3) for e in _est_vals):
         st.info(
-            "Datos SeaBird (.cnv): las estaciones son números del perfil en cabecera "
-            f"(p. ej. {_est_vals[:8]}), no necesariamente 1–3 del CSV histórico E1CU/E2CU/E3CU."
+            "Estaciones SeaBird (`** Station:`): "
+            f"{_est_vals[:10]}{'…' if len(_est_vals) > 10 else ''}."
         )
 
     _fc = df_c["fecha"].dropna()
@@ -590,127 +768,70 @@ def render_radiales_cudillero() -> None:
     _fecha_max_y = str(_fc.max().year) if len(_fc) else "—"
     _ultima_campana = _fc.max().strftime("%d/%m/%Y") if len(_fc) else "—"
 
-    # ── Hero estilo DatasturHero ──────────────────────────────────────────────
+    st.markdown(
+        "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
+        "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin:16px 0 8px;'>"
+        f"2 · {radial_label} · 3 · Estación y series</p>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"""
-<div style="
-    background:linear-gradient(135deg,#0E1626 0%,#080D16 100%);
-    border:1px solid rgba(255,255,255,0.07);
-    border-radius:12px;
-    padding:28px 32px 24px;
-    margin-bottom:20px;
-    position:relative;
-    overflow:hidden;
-">
-  <!-- glow decorativo -->
-  <div style="
-    position:absolute;top:-60px;right:-60px;
-    width:260px;height:260px;
-    border-radius:50%;
-    background:radial-gradient(circle,rgba(0,191,255,0.08) 0%,transparent 70%);
-    pointer-events:none;
-  "></div>
-
-  <!-- badge estado -->
-  <div style="
-    display:inline-flex;align-items:center;gap:6px;
-    padding:4px 10px;border-radius:9999px;
-    border:1px solid rgba(0,191,255,0.25);
-    background:rgba(0,191,255,0.08);
-    font-family:'JetBrains Mono',monospace;
-    font-size:0.65rem;font-weight:700;
-    text-transform:uppercase;letter-spacing:0.18em;
-    color:#00BFFF;margin-bottom:14px;
-  ">
-    <span style="width:6px;height:6px;border-radius:50%;background:#00BFFF;
-                 box-shadow:0 0 6px #00BFFF;animation:none;"></span>
-    Sistema operativo
-  </div>
-
-  <!-- título -->
-  <h1 style="
-    font-family:'Plus Jakarta Sans',sans-serif;
-    font-size:2rem;font-weight:800;
-    color:#E2EAF4;letter-spacing:-0.02em;
-    margin:0 0 6px;line-height:1.15;
-  ">Radiales Cudillero</h1>
-
-  <!-- subtítulo -->
-  <p style="
-    font-size:0.88rem;color:#A8BBCF;margin:0 0 18px;line-height:1.5;
-  ">
-    Visor de series temporales oceánicas &nbsp;·&nbsp; IEO-CSIC · Proyecto Radiales · Cantábrico
-  </p>
-
-  <!-- chips de cobertura -->
+<div style="background:linear-gradient(135deg,#0E1626 0%,#080D16 100%);
+border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:22px 28px 18px;margin-bottom:16px;">
+  <h2 style="font-family:'Plus Jakarta Sans',sans-serif;font-size:1.35rem;font-weight:800;
+color:#E2EAF4;margin:0 0 8px;">{radial_label}</h2>
   <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <span style="
-      padding:4px 12px;border-radius:9999px;
-      background:rgba(255,255,255,0.05);
-      border:1px solid rgba(255,255,255,0.1);
-      font-size:0.72rem;color:#A8BBCF;
-      font-family:'JetBrains Mono',monospace;
-    ">Cobertura <strong style="color:#E2EAF4;">{_fecha_min_y}–{_fecha_max_y}</strong></span>
-    <span style="
-      padding:4px 12px;border-radius:9999px;
-      background:rgba(255,255,255,0.05);
-      border:1px solid rgba(255,255,255,0.1);
-      font-size:0.72rem;color:#A8BBCF;
-      font-family:'JetBrains Mono',monospace;
-    ">Última campaña <strong style="color:#E2EAF4;">{_ultima_campana}</strong></span>
-    <span style="
-      padding:4px 12px;border-radius:9999px;
-      background:rgba(255,255,255,0.05);
-      border:1px solid rgba(255,255,255,0.1);
-      font-size:0.72rem;color:#A8BBCF;
-      font-family:'JetBrains Mono',monospace;
-    ">E1CU · E2CU · E3CU</span>
+    <span style="padding:4px 12px;border-radius:9999px;background:rgba(255,255,255,0.05);
+border:1px solid rgba(255,255,255,0.1);font-size:0.72rem;color:#A8BBCF;
+font-family:'JetBrains Mono',monospace;">Cobertura <strong style="color:#E2EAF4;">{_fecha_min_y}–{_fecha_max_y}</strong></span>
+    <span style="padding:4px 12px;border-radius:9999px;background:rgba(255,255,255,0.05);
+border:1px solid rgba(255,255,255,0.1);font-size:0.72rem;color:#A8BBCF;
+font-family:'JetBrains Mono',monospace;">Última <strong style="color:#E2EAF4;">{_ultima_campana}</strong></span>
+    <span style="padding:4px 12px;border-radius:9999px;background:rgba(255,255,255,0.05);
+border:1px solid rgba(255,255,255,0.1);font-size:0.72rem;color:#A8BBCF;
+font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{data_source}</strong></span>
   </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    _render_pipeline_provenance_banner(
-        n_clean=len(pipe.df_clean),
-        n_anom=len(pipe.df_anomalies),
-        fecha_min=str(_fc.min().date()) if len(_fc) else "—",
-        fecha_max=str(_fc.max().date()) if len(_fc) else "—",
-    )
 
-    # ── Opciones de estación (df_c ya filtrado) ───────────────────────────────
-    col_temp, col_sal, col_prof = pipe.col_temp, pipe.col_sal, pipe.col_prof
+    if data_source == "pipeline" and pipe is not None:
+        _render_pipeline_provenance_banner(
+            n_clean=n_clean_banner,
+            n_anom=n_anom_banner,
+            fecha_min=str(_fc.min().date()) if len(_fc) else "—",
+            fecha_max=str(_fc.max().date()) if len(_fc) else "—",
+        )
+    else:
+        st.caption(
+            f"**{cnv_stats.get('n_perfiles_cargados', '—')}** perfiles `.cnv` cargados "
+            f"({cnv_stats.get('n_radial_clasificados', '—')} clasificados en disco)."
+        )
+
     depth_m = 5.0
 
-    ids_map = [int(s["estacion"]) for s in stations_geo]
+    ids_map = [int(s["estacion"]) for s in stations_geo] if stations_geo else []
     ids_data = sorted({int(float(x)) for x in df_c["estacion"].dropna().unique().tolist()})
-    opts = sorted(set(ids_map) & set(ids_data)) or [1, 2, 3]
+    opts = sorted(set(ids_map) & set(ids_data)) or ids_data or ids_map
+    if not opts:
+        st.warning("No hay estaciones con datos en esta radial.")
+        st.stop()
     name_by_id = {int(s["estacion"]): str(s["nombre"]) for s in stations_geo}
+    for e in opts:
+        name_by_id.setdefault(int(e), f"Estación {int(e)}")
 
-    # ── Leer clic de mapa desde session_state (el mapa se renderiza abajo) ───
-    _raw_map = st.session_state.get("cud_mapbox")
-    try:
-        if _raw_map is None:
-            _pts: list = []
-        elif isinstance(_raw_map, dict):
-            _pts = (_raw_map.get("selection") or {}).get("points", [])
-        else:
-            _pts = (getattr(_raw_map, "selection", None) or {}).get("points", [])
-    except Exception:
-        _pts = []
-    if _pts:
-        _cd = _pts[0].get("customdata", None)
-        _est_val = None
-        if isinstance(_cd, (list, tuple)):
-            _est_val = _cd[0] if len(_cd) > 0 else None
-        elif isinstance(_cd, np.ndarray):
-            _est_val = _cd.flatten()[0] if _cd.size > 0 else None
-        elif isinstance(_cd, dict):
-            _est_val = next(iter(_cd.values()), None) if _cd else None
-        if _est_val is not None and str(_est_val).strip() != "":
-            _clicked = int(float(_est_val))
-            st.session_state["station_tab_temp"] = _clicked
-            st.session_state["station_tab_sal"] = _clicked
+    _map_key = f"radial_transect_map_{radial_id}"
+    for pt in _map_selection_points(st.session_state.get(_map_key)):
+        est_val = _point_customdata_scalar(pt)
+        if est_val is not None and str(est_val).strip() != "":
+            clicked = int(float(est_val))
+            if clicked in opts:
+                st.session_state["station_tab_temp"] = clicked
+                st.session_state["station_tab_sal"] = clicked
+            break
+
 
     def _axis_label_for_value_column(col: str) -> str:
         c = str(col).lower()
@@ -1100,7 +1221,7 @@ def render_radiales_cudillero() -> None:
     def _station_buttons(tab_key: str) -> int | None:
         """Renderiza tres botones de estación y devuelve la seleccionada (o None)."""
         current = st.session_state.get(tab_key)
-        btn_labels = [name_by_id.get(o, f"E{o}CU") for o in opts]
+        btn_labels = [name_by_id.get(o, f"Estación {o}") for o in opts]
         pad = max(0, 4 - len(opts))
         bcols = st.columns(len(opts) + pad, gap="small")
         for i, (opt, lbl) in enumerate(zip(opts, btn_labels)):
@@ -1151,7 +1272,7 @@ def render_radiales_cudillero() -> None:
         else:
             _render_series_and_atac(
                 df_gijon=df_c,
-                source_label="Pipeline",
+                source_label=data_source,
                 col_prof=col_prof,
                 col_temp=col_temp,
                 col_value=col_temp,
@@ -1179,7 +1300,7 @@ def render_radiales_cudillero() -> None:
         else:
             _render_series_and_atac(
                 df_gijon=df_c,
-                source_label="Pipeline",
+                source_label=data_source,
                 col_prof=col_prof,
                 col_temp=col_temp,
                 col_value=col_sal,
@@ -1239,7 +1360,7 @@ def main() -> None:
         except Exception:
             pass
 
-    render_radiales_cudillero()
+    render_radiales_explorer()
 
 
 if __name__ == "__main__":
