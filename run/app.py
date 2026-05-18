@@ -4,11 +4,12 @@ run/app.py — Visor IEO · Radiales oceánicos
 
 Aviso práctico
 --------------
-Este dashboard todavía usa Pandas/Plotly para la UI.
-El pipeline de producción (ingesta + anomalías + reportes) ya no depende de Pandas.
+Este dashboard usa Pandas/Plotly para la UI.
+El pipeline de producción (ingesta + anomalías + reportes) no depende de Pandas.
 
-Si quieres que la UI sea 100% libre de Pandas, hay que migrar también `src/03_visualization.py`
-y sus helpers (fuera del alcance del plan de refactor del pipeline).
+Las funciones de gráficas reutilizables (Plotly puro, sin Streamlit) viven en
+`src/ieo/reports/figures_radiales.py`; este archivo solo contiene el pegamento
+de Streamlit (caché, CSS, lógica de UI).
 """
 from __future__ import annotations
 
@@ -62,6 +63,10 @@ from pipeline_runs import (
     load_pipeline_viewer_data,
     read_provenance_dict,
     resolve_run_root_for_ui,
+)
+from ieo.reports.figures_radiales import (
+    build_cudillero_radial_map_figure,
+    parse_radial_station_coords_from_methodology,
 )
 
 import streamlit as st
@@ -248,143 +253,9 @@ def _cached_cudillero_methodology_text() -> str:
     return load_methodology("radiales_cudillero")
 
 
-def parse_radial_station_coords_from_methodology(md_text: str) -> list[dict[str, float | int | str]]:
-    """
-    Extrae lat/lon WGS84 del markdown de metodología (comentario HTML E1|E2|E3 o DMS en viñetas).
-    """
-    if "<p>Texto de metodología pendiente" in md_text:
-        return []
-
-    block4 = re.search(
-        r"<!--\s*E1\s+([\d.]+)\s+([-\d.]+)\s*\|\s*E2\s+([\d.]+)\s+([-\d.]+)\s*\|\s*E3\s+([\d.]+)\s+([-\d.]+)\s*\|\s*E4\s+([\d.]+)\s+([-\d.]+)\s*-->",
-        md_text,
-    )
-    if block4:
-        return [
-            {"estacion": 1, "lat": float(block4.group(1)), "lon": float(block4.group(2)), "nombre": "E1 · Costa"},
-            {"estacion": 2, "lat": float(block4.group(3)), "lon": float(block4.group(4)), "nombre": "E2 · Plataforma"},
-            {"estacion": 3, "lat": float(block4.group(5)), "lon": float(block4.group(6)), "nombre": "E3 · Talud"},
-            {"estacion": 4, "lat": float(block4.group(7)), "lon": float(block4.group(8)), "nombre": "E4 · Talud profundo"},
-        ]
-
-    block3 = re.search(
-        r"<!--\s*E1\s+([\d.]+)\s+([-\d.]+)\s*\|\s*E2\s+([\d.]+)\s+([-\d.]+)\s*\|\s*E3\s+([\d.]+)\s+([-\d.]+)\s*-->",
-        md_text,
-    )
-    if block3:
-        return [
-            {"estacion": 1, "lat": float(block3.group(1)), "lon": float(block3.group(2)), "nombre": "E1CU"},
-            {"estacion": 2, "lat": float(block3.group(3)), "lon": float(block3.group(4)), "nombre": "E2CU"},
-            {"estacion": 3, "lat": float(block3.group(5)), "lon": float(block3.group(6)), "nombre": "E3CU"},
-        ]
-
-    dms_pat = re.compile(
-        r"\*\*Estación\s+(\d+)\s*·\s*([^*]+)\*\*\s*\(\s*(\d+)°\s*([\d.]+)\s*['′´]\s*N\s*,\s*(\d+)°\s*([\d.]+)\s*['′´]\s*W",
-        re.IGNORECASE,
-    )
-    found: list[dict[str, float | int | str]] = []
-    for m in dms_pat.finditer(md_text):
-        n = int(m.group(1))
-        label = f"E{n} · {m.group(2).strip()}"
-        lat_deg, lat_min = int(m.group(3)), float(m.group(4))
-        lon_deg, lon_min = int(m.group(5)), float(m.group(6))
-        lat = lat_deg + lat_min / 60.0
-        lon = -(lon_deg + lon_min / 60.0)
-        found.append({"estacion": n, "lat": lat, "lon": lon, "nombre": label})
-    found.sort(key=lambda x: int(x["estacion"]))  # type: ignore[arg-type, return-value]
-    return found
-
-
-def build_cudillero_radial_map_figure(stations: list[dict[str, float | int | str]]) -> go.Figure:
-    """
-    Mapa interactivo con marcadores diferenciados por batimetría.
-    Colores graduados del azul claro (costa) al azul oscuro (talud profundo).
-    """
-    center_lat, center_lon = 43.689, -6.150
-    zoom = 8.6
-    if stations:
-        lats = [float(s["lat"]) for s in stations]
-        lons = [float(s["lon"]) for s in stations]
-        center_lat = sum(lats) / len(lats)
-        center_lon = sum(lons) / len(lons)
-        lat_span = max(lats) - min(lats)
-        lon_span = max(lons) - min(lons)
-        span = max(lat_span * 1.35, lon_span * 1.6, 0.06)
-        zoom = float(np.clip(11.2 - span * 18.0, 7.8, 10.5))
-
-    fig = go.Figure()
-
-    # Línea del transecto
-    if len(stations) >= 2:
-        ordered = sorted(stations, key=lambda s: float(s["lat"]))
-        line_lat = [float(s["lat"]) for s in ordered]
-        line_lon = [float(s["lon"]) for s in ordered]
-        fig.add_trace(
-            go.Scattermap(
-                lat=line_lat,
-                lon=line_lon,
-                mode="lines",
-                line=dict(color="rgba(30,58,95,0.4)", width=2),
-                hoverinfo="skip",
-                showlegend=False,
-            )
-        )
-
-    if stations:
-        # Profundidades nominales por estación (para tooltip y color)
-        _DEPTH_LABELS = {1: "E1CU", 2: "E2CU", 3: "E3CU", 4: "E4CU"}
-        # Gradiente azul claro → azul marino por profundidad
-        _DEPTH_COLORS = ["#5ea8d4", "#2b6cb0", "#1a3f6f", "#0c1f3f"]
-
-        lats = [float(s["lat"]) for s in stations]
-        lons = [float(s["lon"]) for s in stations]
-        ids = [int(s["estacion"]) for s in stations]
-        colors = [_DEPTH_COLORS[min(i - 1, 3)] for i in ids]
-        sizes = [22, 24, 26, 28]  # crece con la profundidad
-        sizes_mapped = [sizes[min(i - 1, 3)] for i in ids]
-
-        hover_texts = [
-            f"<b>E{i} — {_DEPTH_LABELS.get(i, str(s['nombre']))}</b>"
-            for i, s in zip(ids, stations)
-        ]
-
-        fig.add_trace(
-            go.Scattermap(
-                lat=lats,
-                lon=lons,
-                mode="markers+text",
-                text=[str(i) for i in ids],
-                textposition="middle center",
-                textfont=dict(size=11, color="#ffffff", family="Arial, sans-serif"),
-                marker=dict(
-                    size=sizes_mapped,
-                    color=colors,
-                    symbol="circle",
-                    opacity=0.95,
-                ),
-                customdata=np.array(ids).reshape(-1, 1),
-                hovertext=hover_texts,
-                hovertemplate="%{hovertext}<extra></extra>",
-                showlegend=False,
-            )
-        )
-
-    fig.update_layout(
-        map=dict(
-            style="carto-positron",
-            center=dict(lat=center_lat, lon=center_lon),
-            zoom=zoom,
-            bearing=0,
-            pitch=0,
-        ),
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=460,
-        paper_bgcolor="#f8fafc",
-        plot_bgcolor="#f8fafc",
-        showlegend=False,
-        uirevision="cudillero_map",
-    )
-    return fig
+# parse_radial_station_coords_from_methodology y build_cudillero_radial_map_figure
+# viven en src/ieo/reports/figures_radiales.py (Plotly puro, sin Streamlit).
+# Se importan al inicio del archivo desde ese módulo.
 
 
 def _render_pipeline_provenance_banner(
@@ -430,7 +301,7 @@ def _render_pipeline_provenance_banner(
         (
             _SVG_ANCHOR,
             "Ingesta estandarizada",
-            "Perfiles oceánicos en formato canónico. Columnas normalizadas, fechas "
+            "Perfiles SeaBird `.cnv` en formato canónico. Columnas normalizadas, fechas "
             "validadas, radial identificada automáticamente (E1CU · E2CU · E3CU).",
         ),
         (
@@ -443,15 +314,19 @@ def _render_pipeline_provenance_banner(
             _SVG_ALERT,
             "Detección de anomalías",
             "Isolation Forest multivariante (T, S, profundidad) con semilla fija. "
-            "Reproducible entre corridas.",
+            "Reproducible entre ejecuciones del pipeline.",
         ),
         (
             _SVG_ACTIVITY,
             "Análisis temporal · ATAC",
             f"Serie mensual {fecha_min}\u2013{fecha_max}. "
-            "Descomposición Marcos + pronóstico AR con bandas de tolerancia.",
+            "Descomposición Marcos + bandas iid sobre residuos.",
         ),
     ]
+    footer_note = (
+        "Los números corresponden al conjunto Parquet cargado (se actualizan al cambiar de ejecución). "
+        "Visor de resultados validados · no sustituye el informe científico firmado."
+    )
 
     parts = "".join(
         f"<div style='"
@@ -483,10 +358,8 @@ def _render_pipeline_provenance_banner(
         "margin-top:10px;margin-bottom:12px;'>"
         + parts
         + "</div>"
-        "<p style='font-size:0.68rem;color:#5B7FA3;margin:0;"
-        "font-family:\"JetBrains Mono\",monospace;'>"
-        "Visor de resultados validados · no sustituye el informe científico firmado."
-        "</p>"
+        f"<p style='font-size:0.68rem;color:#5B7FA3;margin:0;"
+        f"font-family:\"JetBrains Mono\",monospace;'>{footer_note}</p>"
     )
     st.markdown(grid_html, unsafe_allow_html=True)
 
@@ -500,7 +373,7 @@ def _render_data_governance_card() -> None:
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(show_spinner="Cargando Parquet de la corrida seleccionada…")
+@st.cache_data(show_spinner="Cargando Parquet de la ejecución seleccionada…")
 def load_cudillero_pipeline_viewer(run_root_str: str, cache_token: str) -> PipelineViewerLoadResult | None:
     """``cache_token`` solo participa en la clave de caché de Streamlit (mtime/tamaño del Parquet limpio)."""
     _ = cache_token
@@ -645,77 +518,20 @@ def _monthly_value_at_depth(
     col_estacion: str,
     target_depth_m: float,
 ) -> tuple[pd.DataFrame, dict[str, float | int]]:
-    """Interpola ``col_value`` a ``target_depth_m`` por lance y agrega media mensual por estación."""
-    use_cols = [col_fecha, col_prof, col_value, col_estacion] + (["acronimo"] if "acronimo" in df.columns else [])
-    work = df[use_cols].copy()
-    work[col_fecha] = pd.to_datetime(work[col_fecha], errors="coerce")
-    work[col_prof] = pd.to_numeric(work[col_prof], errors="coerce")
-    work[col_value] = pd.to_numeric(work[col_value], errors="coerce")
-    work[col_estacion] = pd.to_numeric(work[col_estacion], errors="coerce")
-    work = work.dropna(subset=[col_fecha, col_prof, col_value, col_estacion])
-    if work.empty:
-        return pd.DataFrame(), {
-            "n_casts": 0,
-            "n_casts_con_valor": 0,
-            "n_casts_sin_cobertura_en_profundidad": 0,
-            "profundidad_objetivo_m": int(target_depth_m) if target_depth_m == int(target_depth_m) else target_depth_m,
-        }
+    from ieo.reports.monthly_at_depth import monthly_value_at_depth  # noqa: PLC0415
 
-    if "acronimo" in work.columns:
-        group_keys = ["acronimo", col_estacion]
-    else:
-        work["_fecha_d"] = work[col_fecha].dt.date
-        group_keys = ["_fecha_d", col_estacion]
-
-    def _interp_value(profile: pd.DataFrame) -> float:
-        dft = (
-            pd.DataFrame({"z": profile[col_prof].to_numpy(dtype=float), "v": profile[col_value].to_numpy(dtype=float)})
-            .dropna()
-            .groupby("z", as_index=False)["v"]
-            .mean()
-            .sort_values("z")
-        )
-        if dft.empty:
-            return float("nan")
-        z = dft["z"].to_numpy(dtype=float)
-        v = dft["v"].to_numpy(dtype=float)
-        if target_depth_m < float(z[0]) or target_depth_m > float(z[-1]):
-            return float("nan")
-        return float(np.interp(target_depth_m, z, v))
-
-    per_cast = (
-        work.groupby(group_keys, as_index=False)
-        .apply(
-            lambda g: pd.Series(
-                {
-                    "fecha": pd.to_datetime(g[col_fecha].iloc[0]).to_period("M").to_timestamp(how="start"),
-                    "valor_prof": _interp_value(g),
-                }
-            ),
-            include_groups=False,
-        )
-        .reset_index(drop=True)
+    return monthly_value_at_depth(
+        df,
+        col_fecha=col_fecha,
+        col_prof=col_prof,
+        col_value=col_value,
+        col_estacion=col_estacion,
+        target_depth_m=target_depth_m,
     )
-    n_casts = int(len(per_cast))
-    n_valid = int(per_cast["valor_prof"].notna().sum())
-    diag: dict[str, float | int] = {
-        "n_casts": n_casts,
-        "n_casts_con_valor": n_valid,
-        "n_casts_sin_cobertura_en_profundidad": n_casts - n_valid,
-        "profundidad_objetivo_m": int(target_depth_m) if target_depth_m == int(target_depth_m) else target_depth_m,
-    }
-
-    per_cast = per_cast.dropna(subset=["valor_prof", "fecha"])
-    if per_cast.empty:
-        return pd.DataFrame(), diag
-
-    agg = per_cast.groupby([col_estacion, "fecha"], as_index=False)["valor_prof"].mean()
-    agg = agg.loc[:, [col_estacion, "fecha", "valor_prof"]]
-    return agg.sort_values([col_estacion, "fecha"]).reset_index(drop=True), diag
 
 
 def render_radiales_cudillero() -> None:
-    """Vista Radiales Cudillero: mapa, metodología y Marcos+ATAC desde la corrida del pipeline elegida en la barra lateral."""
+    """Vista Radiales Cudillero: mapa, metodología y Marcos+ATAC desde la ejecución del pipeline elegida en la barra lateral."""
 
     if "estacion_seleccionada_csv" not in st.session_state:
         st.session_state["estacion_seleccionada_csv"] = 1
@@ -724,7 +540,10 @@ def render_radiales_cudillero() -> None:
 
     valid_runs = list_valid_run_roots(PROJECT_ROOT)
     if not valid_runs:
-        st.warning("No hay datos procesados en el sistema. Ejecuta el pipeline principal primero.")
+        st.warning(
+            "No hay datos procesados en el sistema. Coloca ficheros `.cnv` en `data/cnv/` "
+            "y ejecuta `python run/main.py`."
+        )
         st.stop()
 
     choice = st.session_state.get("pipeline_run_select", LATEST_SENTINEL)
@@ -749,12 +568,22 @@ def render_radiales_cudillero() -> None:
     df_c, n_other_radial = filter_dataframe_to_radial(pipe.df_clean, RADIAL_ID_CUDILLERO)
     if n_other_radial > 0:
         st.warning(
-            f"Se excluyeron **{n_other_radial:,}** filas de otras radiales del CSV combinado. "
-            f"El visor muestra solo Cudillero (E1CU, E2CU, E3CU)."
+            f"Se excluyeron **{n_other_radial:,}** filas de otras radiales en el Parquet de esta ejecución. "
+            "El visor muestra solo Cudillero."
         )
     if df_c.empty:
-        st.error("No hay filas de Cudillero en esta corrida. Revisa el CSV o vuelve a ejecutar el pipeline.")
+        st.error(
+            "No hay filas utilizables en esta ejecución del pipeline. "
+            "Vuelve a ejecutar `python run/main.py` y elige la ejecución más reciente en la barra lateral."
+        )
         st.stop()
+
+    _est_vals = sorted(df_c["estacion"].dropna().unique().astype(int).tolist())
+    if _est_vals and not all(e in (1, 2, 3) for e in _est_vals):
+        st.info(
+            "Datos SeaBird (.cnv): las estaciones son números del perfil en cabecera "
+            f"(p. ej. {_est_vals[:8]}), no necesariamente 1–3 del CSV histórico E1CU/E2CU/E3CU."
+        )
 
     _fc = df_c["fecha"].dropna()
     _fecha_min_y = str(_fc.min().year) if len(_fc) else "—"
@@ -920,7 +749,8 @@ def render_radiales_cudillero() -> None:
     ) -> None:
         if df_gijon is None or df_gijon.empty:
             st.warning(
-                "No hay datos listos para graficar: revisa el **conjunto de datos** seleccionado en la barra lateral."
+                "No hay datos listos para graficar: revisa el **conjunto de datos** seleccionado en la barra lateral "
+                "(ejecución del pipeline)."
             )
             return
 

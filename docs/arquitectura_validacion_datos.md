@@ -49,8 +49,8 @@ flowchart TB
 
   subgraph anal [5_Analisis_validado]
     SER[Serie_temporal_agregada]
-    MOD[Modelo_Marcos_ATAC]
-    HOLD[Holdout_y_bandas]
+    MOD[Modelo_Marcos]
+    HOLD[Bandas_iid_holdout]
     CLEAN --> SER --> MOD --> HOLD
   end
 
@@ -101,7 +101,8 @@ flowchart TB
 ### 5. Análisis con validación
 
 - Serie mensual por estación y profundidad objetivo.
-- Descomposición estacional + pronóstico AR con bandas; holdout explícito (últimos N meses).
+- Descomposición Marcos (tendencia + estacionalidad) + bandas **iid** (σ constante, sin AR); holdout explícito (últimos N meses).
+- Líneas del visor solo entre meses consecutivos (`ieo/reports/plot_gaps.py`).
 - **Código:** `src/02_analysis.py`, `src/atac_monthly_report.py`.
 
 ### 6. Visor gobernado

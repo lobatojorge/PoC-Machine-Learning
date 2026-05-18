@@ -10,11 +10,11 @@ No se afirma equivalencia con producto industrial: sin SLA, sin multi-tenant, si
 
 ## Orden de ejecución
 
-1. Colocar o generar `data/processed/perfiles_all.csv` (ver `README.md`).
-2. `python run/main.py` — genera Parquet y reportes bajo `outputs/runs/<run_id>/` (o desde el visor: barra lateral **Ejecutar pipeline ahora**).
-3. `streamlit run run/app.py` (desde `run/`) — en la barra lateral, elegir **Última corrida** o un `run_id` concreto; revisar **Provenance** si existe `provenance.json`.
+1. Colocar ficheros SeaBird en `data/cnv/` (subcarpetas por año admitidas; ver `README.md`).
+2. `python run/main.py` — ingesta solo `.cnv` (radial Cudillero por defecto) y genera Parquet bajo `outputs/runs/<run_id>/`.
+3. `streamlit run run/app.py` — el visor carga `perfiles_all.ctd_clean.parquet` (y anomalías) de la última corrida válida.
 
-El visor **no** lee el CSV directamente: lee `data/perfiles_all.ctd_clean.parquet` (y anomalías) de la corrida seleccionada.
+El visor **no** lee `.cnv` ni CSV: solo Parquet producidos por el pipeline.
 
 ## Docker (opcional)
 
@@ -33,7 +33,7 @@ Con Compose:
 docker compose up --build
 ```
 
-Los volúmenes montan `outputs/` (Parquet de corridas) y `data/` (CSV processed). Sin ellos, el contenedor no verá corridas ni entrada CSV salvo que se copien dentro de la imagen (no recomendado para datos reales).
+Los volúmenes montan `outputs/` (Parquet de corridas) y `data/cnv/` (ficheros fuente). Sin ellos, el contenedor no verá corridas ni entrada `.cnv` salvo que se copien dentro de la imagen (no recomendado para datos reales).
 
 ## Tests automáticos
 

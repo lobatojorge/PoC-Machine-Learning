@@ -4,10 +4,11 @@ from __future__ import annotations
 src/atac_monthly_report.py
 ==========================
 
-Figura única (mensual) inspirada en ATAC, usando:
+Figura única (mensual) inspirada en ATAC (visualización), usando:
 - Ajuste base tipo Marcos: tendencia lineal + estacionalidad mensual fija.
-- ATAC sobre residuos: se entrena sin los últimos 12 meses observados (holdout) y
-  se compara el holdout contra bandas 50/75/95%.
+- Bandas de incertidumbre: residuos Marcos iid gaussianos (σ constante, sin AR).
+- Holdout: últimos 12 meses excluidos del ajuste; bandas 50/75/95 % en validación.
+- Líneas solo entre meses consecutivos (sin unir campañas separadas).
 
 Este módulo devuelve:
 - Una figura Plotly con leyenda ordenada y agrupada.
@@ -163,6 +164,7 @@ def build_atac_monthly_figure(
         rs,
         cutoff_holdout_start=cutoff,
         holdout_months=holdout_eff,
+        fechas=dec["fecha"],
     )
     if atac_df.empty:
         raise ValueError(f"No se pudo ajustar ATAC (residuos): {meta_a}")
@@ -224,31 +226,33 @@ def build_atac_monthly_figure(
             )
         )
 
-    # (2) Ajuste base (Marcos) — línea azul discontinua
-    fig.add_trace(
-        go.Scatter(
-            x=work.loc[ok, "fecha"],
-            y=work.loc[ok, "fitted"],
-            mode="lines",
-            name="Modelo base (tendencia + ciclo mensual)",
-            line=dict(color="#104E8B", width=1.8, dash="dash"),
-            legendgroup="modelo",
-            hovertemplate=f"%{{x|%b %Y}}<br>Modelo base: %{{y:.3g}} {var_units}<extra></extra>",
-        )
+    from ieo.reports.plot_gaps import add_line_markers_by_segments, add_lines_only_by_segments  # noqa: PLC0415
+
+    obs_df = work.loc[ok]
+    ht = f"%{{x|%b %Y}}<br>Modelo base: %{{y:.3g}} {var_units}<extra></extra>"
+
+    # (2) Ajuste base (Marcos) — tramos entre meses consecutivos
+    add_lines_only_by_segments(
+        fig,
+        obs_df["fecha"],
+        obs_df["fitted"],
+        name="Modelo base (tendencia + ciclo mensual)",
+        line=dict(color="#104E8B", width=1.8, dash="dash"),
+        legendgroup="modelo",
+        hovertemplate=ht,
     )
 
-    # (3) Observación — 1 punto por mes
-    fig.add_trace(
-        go.Scatter(
-            x=work.loc[ok, "fecha"],
-            y=work.loc[ok, "observation"],
-            mode="markers",
-            name="Observación",
-            marker=dict(color="#104E8B", size=7, symbol="circle-open"),
-            legendgroup="obs",
-            legendgrouptitle_text="Observación",
-            hovertemplate=f"%{{x|%b %Y}}<br>{var_label}: %{{y:.3g}} {var_units}<extra></extra>",
-        )
+    # (3) Observación — marcadores; línea solo en tramos contiguos
+    add_line_markers_by_segments(
+        fig,
+        obs_df["fecha"],
+        obs_df["observation"],
+        name="Observación",
+        line=dict(color="#104E8B", width=1.0),
+        marker=dict(color="#104E8B", size=7, symbol="circle-open"),
+        legendgroup="obs",
+        legendgrouptitle_text="Observación",
+        hovertemplate=f"%{{x|%b %Y}}<br>{var_label}: %{{y:.3g}} {var_units}<extra></extra>",
     )
 
     # (4) Pronóstico (holdout) — tonos rojizos, apilando porcentajes en leyenda
@@ -286,21 +290,18 @@ def build_atac_monthly_figure(
                     legendgrouptitle_text="Pronóstico",
                 )
             )
-        fig.add_trace(
-            go.Scatter(
-                x=wf["fecha"],
-                y=wf["temp_fc_mean"],
-                mode="lines",
-                name="media",
-                line=dict(color=red, width=2.0),
-                legendgroup="forecast",
-                hovertemplate=f"%{{x|%b %Y}}<br>Pronóstico: %{{y:.3g}} {var_units}<extra></extra>",
-            )
+        add_lines_only_by_segments(
+            fig,
+            wf["fecha"],
+            wf["temp_fc_mean"],
+            name="media",
+            line=dict(color=red, width=2.0),
+            legendgroup="forecast",
+            hovertemplate=f"%{{x|%b %Y}}<br>Pronóstico: %{{y:.3g}} {var_units}<extra></extra>",
         )
 
-    ar_order = meta_a.get("ar_order", None)
-    ar_txt = "n/d" if ar_order is None or (isinstance(ar_order, float) and np.isnan(ar_order)) else str(int(ar_order))
     cutoff_txt = cutoff.strftime("%Y-%m")
+    sigma_txt = meta_a.get("residual_sigma", "n/d")
 
     fig.update_layout(
         template="simple_white",
@@ -343,9 +344,8 @@ def build_atac_monthly_figure(
         f"enmascarado por la dispersión.",
 
         f"¿Qué es la banda azul?|||"
-        f"Muestra el <b>rango de variación habitual</b> del modelo (intervalo 95%). "
-        f"Banda estrecha = serie homogénea a lo largo de los años. "
-        f"Banda ancha = mayor dispersión, posible mezcla de condiciones o cambio en el sistema.",
+        f"Muestra el <b>rango esperable</b> del ajuste Marcos (±95 % sobre residuos iid, σ≈{sigma_txt}). "
+        f"No hay memoria en el error: la anchura es <b>constante</b>, no crece mes a mes.",
 
         f"¿Qué es el tramo rojo?|||"
         f"Los últimos <b>{holdout_eff} meses</b> (desde {cutoff_txt}) se excluyen del ajuste para "

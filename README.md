@@ -6,7 +6,7 @@
 
 Un **sistema de auditoría de datos oceanográficos** con tres componentes:
 
-1. **Pipeline reproducible** (`run/main.py`): ingesta tabular → esquema canónico → contrato de calidad → segregación de anomalías (Isolation Forest) → Parquet versionado con `provenance.json`.
+1. **Pipeline reproducible** (`run/main.py`): puerta de cuarentena → ingesta `.cnv` → contrato de calidad → segregación de anomalías (Isolation Forest) → Parquet versionado con `provenance.json`, `run_summary.json` y **`outputs/RESUMEN_ULTIMA.html`** (resumen visual de la última corrida).
 2. **Contrato de datos en código** (`src/ieo/validation/`): reglas con severidad ERROR/WARNING versionadas en git y verificadas en CI — no en un documento PDF.
 3. **Visor gobernado** (`run/app.py`): muestra el estado de calidad *antes* de cada gráfica; el investigador ve qué pasó antes de interpretar la serie.
 
@@ -18,121 +18,139 @@ La arquitectura es transferible a otros dominios: datos volcánicos, calidad de 
 
 ## Demo rápida → [`DEMO.md`](DEMO.md)
 
-Pipeline de ingesta sobre **un CSV tabular** de perfiles CTD y visor **Streamlit** (Marcos + ATAC) para la radial de **Cudillero**. El visor lee los **Parquet** generados por la última corrida del pipeline (o la corrida que elijas en la barra lateral).
+Pipeline sobre ficheros **SeaBird `.cnv`** y visor **Streamlit** (Marcos + bandas tipo ATAC) para la radial de **Cudillero**. El visor lee los **Parquet** generados por la última corrida del pipeline.
+
+**Modelo en el visor:** tendencia + estacionalidad mensual (Marcos); incertidumbre = residuos **iid gaussianos** (σ constante, **sin AR**). Las líneas solo unen **meses consecutivos** (no se cruzan huecos de campaña).
+
+**Auditoría de clasificación radial en disco:** `python run/audit_cnv_radials.py` → `outputs/temporal/cnv_radial_audit.csv` (generado localmente; no versionado).
 
 ---
 
-## Entrada de datos
+## Carpetas de datos
 
 | Ubicación | Uso |
 |-----------|-----|
-| `data/processed/perfiles_all.csv` | **Única entrada del pipeline** (`python run/main.py` / `ieo run`). El visor **no** lee este CSV directamente. |
-| `outputs/runs/<run_id>/data/*.parquet` | **Entrada del visor** (`streamlit run run/app.py`): `perfiles_all.ctd_clean.parquet` y `perfiles_all.ctd_anomalies.parquet` (y metadatos en `provenance.json` si existen). |
-| `data/raw/perfiles_all.csv` | Histórico tabular; conviértelo a processed con **`python run/build_processed_from_raw.py`** (streaming). |
-| `data/raw/` (otros) | Crudos (p. ej. `.cnv`); no entran al pipeline hasta convertirlos. |
-| `data/cnv/` | Residual; puede quedar vacío o con `.gitkeep`. No es entrada del flujo actual. |
+| `data/cnv/` | **Entrada en disco:** ficheros `.cnv` de todas las radiales (admite subcarpetas por año). El pipeline **solo procesa Cudillero** (véase abajo). |
+| `data/quarantine/` | Ficheros `.cnv` rechazados por la puerta de entrada + `reasons.json`. |
+| `outputs/runs/<run_id>/data/*.parquet` | **Entrada del visor**: Parquets `*_ctd_clean.parquet`, `*_ctd_anomalies.parquet`, etc. |
+| `outputs/RESUMEN_ULTIMA.html` | **Resumen visual** de la última ejecución de `run/main.py` (se sobrescribe cada vez; en `.gitignore`). |
 
-Las carpetas `data/*` (salvo `.gitkeep`) y la mayoría de `outputs/*` están en **`.gitignore`**: no suben al remoto salvo `git add -f`. Antes de `git push`, revisa `git status`.
+> **Trazabilidad:** `outputs/runs/<run_id>/provenance.json` registra el SHA256 de cada fichero fuente,
+> la versión de Python, la plataforma y los parámetros de la corrida. Los ficheros `.hex` y `.xmlcon`
+> originales del CTD se conservan en la base de datos del buque; el SHA256 del `.cnv` exportado
+> es suficiente para rastrear la cadena de custodia.
+
+Las carpetas `data/*` (salvo `.gitkeep`) y la mayoría de `outputs/*` están en **`.gitignore`**.
 
 ---
 
 ## Arranque rápido
 
-Orden recomendado: **primero** el pipeline (genera Parquet), **después** el visor.
+Orden: **primero** el pipeline (genera Parquet), **después** el visor.
 
 ```bash
-cd run
-pip install -r requirements.txt
-python main.py          # pipeline → outputs/runs/<run_id>/
-streamlit run app.py    # visor: elige corrida en la barra lateral
-```
+# 1. Instalar dependencias (una sola vez)
+pip install -r run/requirements.txt
 
-Desde la raíz: `python run/main.py` · `streamlit run run/app.py`.
+# 2. Coloca los .cnv en data/cnv/ (puedes mezclar radiales; solo se procesa Cudillero)
+
+# 3. Ejecutar el pipeline
+python run/main.py           # → solo Cudillero; resumen en outputs/RESUMEN_ULTIMA.html
+
+# 4. Abrir el resumen visual (opcional)
+#    outputs/RESUMEN_ULTIMA.html en el navegador
+
+# 5. Lanzar el visor
+streamlit run run/app.py     # → elige corrida en la barra lateral
+```
 
 **Docker (opcional):** ver [`docs/operacion_tfm.md`](docs/operacion_tfm.md).
 
 ---
 
-## Contrato mínimo de una corrida
+## Filtro radial (solo Cudillero)
 
-Tras un `python run/main.py` exitoso, bajo `outputs/runs/<run_id>/` se espera (entre otros):
+En `data/cnv/` suelen convivir casts de **Gijón, Santander, Vigo, A Coruña y Cudillero**.
+Cada `.cnv` trae la radial en metadatos SeaBird, sobre todo:
 
-| Ruta relativa a `run_id` | Rol |
-|--------------------------|-----|
-| `provenance.json` | Fuentes y parámetros registrados al inicio de la corrida. |
-| `data/<stem>.ctd_canonical.parquet` | Tabla canónica CTD (Polars → Parquet). |
-| `data/perfiles_all.ctd_clean.parquet` | Filas no marcadas como anomalía por Isolation Forest. |
-| `data/perfiles_all.ctd_anomalies.parquet` | Filas anómalas (puede estar vacío). |
-| `checkpoints/*.html` | Informes por paso (ingesta, contrato radial, anomalías, calidad). |
-| Bitácora bajo `run_root` | Resumen final de la corrida (`write_logbook`). |
+| Metadato | Ejemplo |
+|----------|---------|
+| `** Cruise:` | `Radial Santander`, `Radial Gijón`, …; `RCAN_*` / `Radiales Cantábrico` = **campaña**, no radial |
+| `** Latitude/Longitude:` | **Principal** para asignar radial si el cruise es ambiguo |
+| `** Station:` | Número de estación del cast (E2SA, E2GI, …) |
+| Nombre fichero | `gjul101.cnv` → Gijón; prefijo `s` → Santander; `jul301.cnv` sin prefijo → Cudillero (si no hay coords) |
 
-El visor exige al menos **`data/perfiles_all.ctd_clean.parquet`**. La caché de Streamlit se invalida si cambia el `mtime`/tamaño de ese fichero.
+Por defecto el pipeline **no evalúa ni ingiere** ficheros de otras radiales (se omiten sin copiar a cuarentena).
+Clasificación en `src/ieo/io/cnv_radial.py` (geo → cruise explícito → nombre).
+Así se evita sobrecargar el servidor con miles de perfiles ajenos al producto Cudillero.
+
+- Depuración / procesar todo: `IEO_ALL_RADIALS=1 python run/main.py`
+- Límite de prueba: `IEO_MAX_CNV=10 python run/main.py`
+
+La clasificación vive en `src/ieo/io/cnv_radial.py`.
 
 ---
 
-## Flujo de información (pipeline `ieo` + visor)
+## Flujo del pipeline
 
-Los scripts numerados `src/00_*.py` / `01_*.py` son **atajos** hacia el mismo orquestador en muchos casos. El flujo real de producción:
-
-```mermaid
-flowchart TB
-  subgraph inputs [Entrada]
-    CSV[data_processed_perfiles_all_csv]
-  end
-  subgraph runctx [Contexto de corrida]
-    RID[run_id]
-    RP[RunPaths_outputs_runs]
-    PROV[provenance_json]
-  end
-  subgraph step01 [01 Ingesta]
-    DET[_detect_sources]
-    READ[RadialCsvReader]
-    CAN[build_canonical_lazyframe]
-    PARQ[ctd_canonical_parquet]
-    R01[StepReport_checkpoints]
-  end
-  subgraph step01b [01b Contrato]
-    VAL[validate_canonical_ctd_polars]
-    R01b[StepReport_checkpoints]
-  end
-  subgraph step02 [02 Anomalías]
-    IForest[IsolationForest]
-    ANOM[anomalies_parquet]
-    AUD[audit_parquet]
-    R02[StepReport_checkpoints]
-  end
-  subgraph cierre [Cierre]
-    LOG[write_logbook]
-  end
-  subgraph visor [Visor Streamlit]
-    UI[run_app_py]
-    SEL[selector_corrida]
-    CLEAN[ctd_clean_parquet]
-    ANOM2[ctd_anomalies_parquet]
-  end
-  CSV --> DET
-  DET --> READ
-  READ -->|"LazyFrame + notes IEO_HANDOFF_JSON"| CAN
-  RID --> RP
-  RP --> READ
-  CAN --> PARQ
-  CAN --> R01
-  PARQ --> VAL
-  VAL --> R01b
-  PARQ --> IForest
-  IForest --> ANOM
-  IForest --> AUD
-  IForest --> R02
-  DET --> PROV
-  R02 --> LOG
-  PARQ --> CLEAN
-  IForest --> ANOM2
-  SEL --> UI
-  CLEAN --> UI
-  ANOM2 --> UI
+```
+data/cnv/**/*.cnv   (todas las radiales en disco)
+                  │
+                  ▼ Paso 00a: filtro Cudillero (cnv_radial.py) — omite gijón/santander/…
+                  │
+                  ▼ Paso 00b: puerta de cuarentena (ingest_gate.py)
+                  │   ─ si falla → data/quarantine/<ts>_fichero + reasons.json
+                  │   ─ SHA256 registrado en provenance.json
+                  │
+                  ▼ Paso 01: ingesta y normalización (CnvReader + ieo/transform/)
+                  │   ─ escribe <stem>.ctd_canonical.parquet
+                  │
+                  ▼ Paso 01b: contrato radial (ieo/validation/)
+                  │   ─ ERROR / WARNING por fila; informe HTML en checkpoints/
+                  │
+                  ▼ Paso 02: Isolation Forest (ieo/observability/anomaly.py)
+                  │   ─ escribe *_ctd_clean.parquet, *_ctd_anomalies.parquet, *_ctd_anomaly_audit.parquet
+                  │
+                  ▼ Paso 03: resumen de calidad (ieo/observability/quality_summary.py)
+                  │   ─ informe HTML legible para no técnicos
+                  │
+                  ▼ Cierre: provenance.json + bitácora + run_summary.json + outputs/RESUMEN_ULTIMA.html
 ```
 
-**Streamlit** (`run/app.py`) carga la corrida elegida (o la más reciente), aplica el **contrato radial** sobre perfiles y serie mensual y dibuja **T a 5 m** y **salinidad a 5 m** (estaciones 1–3), con pestaña de revisión **Isolation Forest**. Detalle: `docs/contrato_datos_radiales.md`, metodología: `docs/metodologia_radiales_cudillero.md`.
+**Isolation Forest** no sustituye el contrato radial: el contrato aplica **reglas físicas por fila** (rangos, saltos); el IF detecta **combinaciones estadísticamente inusuales** en el conjunto completo. Son capas complementarias.
+
+**Cuarentena de ficheros** vs **segregación de filas**: la puerta de cuarentena (paso 00) actúa sobre el fichero entero antes de tocarlo. El IF actúa sobre las filas ya cargadas. Son niveles distintos de control.
+
+---
+
+## Resumen visual de la última corrida
+
+Tras **cada** ejecución de `python run/main.py` (éxito o error), el pipeline genera o actualiza:
+
+**`outputs/RESUMEN_ULTIMA.html`**
+
+- Una sola página, fácil de leer en el navegador.
+- Incluye estado de la corrida, pasos OK/fallidos, métricas rápidas, enlaces relativos a `run_summary.json`, `provenance.json` y la carpeta `checkpoints/` de esa corrida.
+- **Se sobrescribe** en cada ejecución (no acumula historial; el historial sigue en `outputs/runs/<run_id>/`).
+- Está en **`.gitignore`** para no versionar datos locales.
+
+La consola también imprime la ruta al final cuando el fichero existe.
+
+---
+
+## Contrato mínimo de una corrida
+
+Tras un `python run/main.py` exitoso, bajo `outputs/runs/<run_id>/`:
+
+| Ruta relativa | Rol |
+|---------------|-----|
+| `provenance.json` | Fuentes y parámetros al inicio de la corrida. |
+| `run_summary.json` | Resumen estructurado: código de salida, pasos, artefactos, conteo de anomalías y errores. |
+| `data/<stem>.ctd_canonical.parquet` | Tabla normalizada (todas las filas) por fichero fuente. |
+| `data/<stem>.ctd_clean.parquet` | Filas no marcadas como anomalía. |
+| `data/<stem>.ctd_anomalies.parquet` | Filas anómalas (no eliminadas). |
+| `data/<stem>.ctd_anomaly_audit.parquet` | Registro del modelo de anomalías. |
+| `checkpoints/*.html` | Informes HTML legibles por paso. |
 
 ---
 
@@ -140,53 +158,50 @@ flowchart TB
 
 ```text
 ├── data/
-│   ├── processed/perfiles_all.csv   # entrada del pipeline (gitignored si contiene datos reales)
-│   └── raw/                           # respaldo; no procesado por el visor
-├── docs/metodologia_radiales_cudillero.md
-├── docs/contrato_datos_radiales.md
-├── docs/posicionamiento_trl.md        # TRL 4, limitaciones, roadmap
-├── docs/arquitectura_validacion_datos.md
-├── docs/guion_reunion_eugenio.md
-├── docs/integracion_web_ieo.md
-├── docs/operacion_tfm.md              # operación, Docker
-├── scripts/e2e_smoke.py               # smoke pipeline + visor
-├── src/ieo/                           # pipeline Polars + validación + reportes
-├── run/app.py, run/main.py, run/pipeline_runs.py, run/ieo_cli.py
-├── tests/                             # pytest (ver requirements-dev.txt)
-└── outputs/runs/                      # artefactos por run_id (gitignored)
+│   ├── cnv/                        # entrada: .cnv (subcarpetas por año OK)
+│   └── quarantine/                 # .cnv rechazados por la puerta de entrada
+├── docs/
+│   ├── escalabilidad.md            # roadmap técnico (TimeGPT, CNV, GX, web)
+│   ├── arquitectura_validacion_datos.md
+│   ├── posicionamiento_trl.md
+│   └── ...
+├── src/
+│   ├── README.md                   # mapa de src/
+│   ├── ieo/                        # pipeline completo
+│   ├── 02_analysis.py              # Marcos + bandas iid (sin AR)
+│   └── atac_monthly_report.py      # figura mensual para el visor
+├── run/
+│   ├── main.py                     # lanzador del pipeline
+│   ├── app.py                      # visor Streamlit
+│   ├── audit_cnv_radials.py        # auditoría de clasificación radial en data/cnv/
+│   └── requirements.txt
+├── tests/                          # pytest (fixtures sintéticos, sin datos reales)
+└── outputs/
+    ├── RESUMEN_ULTIMA.html         # resumen visual última corrida (gitignored)
+    └── runs/                       # artefactos por run_id (gitignored)
 ```
 
 ---
 
 ## Stack
 
-Python 3.11+, Polars (pipeline), Pandas + Plotly (visor Streamlit), scikit-learn (anomalías Isolation Forest).
+Python 3.11+, Polars (pipeline), Pandas + Plotly (visor Streamlit), scikit-learn (Isolation Forest).
 
-**Validación:** contrato de datos propio en `src/ieo/validation/` — dos capas:
-- `radial_contract.py` — reglas CTD específicas del Cantábrico (temperatura, salinidad, gradientes verticales, deriva interanual).
-- `generic_series_contract.py` — capa 0 transferible: rango absoluto, duplicados, brechas temporales, tendencia extrema. Reutilizable en cualquier dominio.
+**Validación:** contrato propio en `src/ieo/validation/`:
+- `radial_contract.py` — reglas CTD Cantábrico (temperatura, salinidad, gradientes, deriva interanual).
+- `generic_series_contract.py` — capa reutilizable: rango absoluto, duplicados, brechas, tendencia extrema.
 
-**Tests:** `pip install -r requirements-dev.txt` → `pytest tests/test_contract.py tests/test_radiales_catalog.py -v`.  
-No necesitan datos IEO: usan fixtures sintéticos. El CI (GitHub Actions) ejecuta todos los tests en Ubuntu.
-
----
-
-## Coherencia pipeline ↔ visor
-
-- **Temperatura (perfil):** el visor usa la misma función que el paso 01b del pipeline: `validate_canonical_ctd_polars` sobre el Parquet limpio (vía Polars). El gradiente vertical usa **dos bandas de Δz** (p. ej. 2,5–5 m vs 5–15 m) con umbrales distintos para no marcar ERROR por glitches casi coplanares ni ignorar termoclinas agudas en varios metros.
-- **Salinidad (perfil):** el contrato canónico actual solo formaliza temperatura en ese wrapper; la salinidad sigue validándose con `validate_profile_dataframe` en el visor (misma familia de reglas que el perfil de T).
-- **Serie mensual / ATAC:** se valida la serie agregada (`validate_monthly_radial_series`). Marcos+ATAC consume la media mensual interpolada a la profundidad objetivo; **no** inyecta puntuaciones ni explicaciones del `audit_log` de Isolation Forest (coste de ingeniería > beneficio para este alcance; ver `docs/operacion_tfm.md`).
-- **Ejecutar pipeline desde el visor:** barra lateral → «Ejecutar pipeline ahora» (subproceso local, sin coste de servicio; puede tardar según tamaño del CSV).
+**Tests:** `pip install -r requirements-dev.txt` → `pytest tests/ -v`. No necesitan datos IEO.
 
 ---
 
 ## Más detalle
 
-- Uso de la carpeta `run/`: **`run/README.md`**.
-- **TRL, limitaciones y roadmap:** [`docs/posicionamiento_trl.md`](docs/posicionamiento_trl.md).
-- **Arquitectura de validación (genérica):** [`docs/arquitectura_validacion_datos.md`](docs/arquitectura_validacion_datos.md).
-- **Guion reunión / pitch:** [`docs/guion_reunion_eugenio.md`](docs/guion_reunion_eugenio.md).
+- Código activo en `src/`: **[`src/README.md`](src/README.md)**.
+- Carpeta `run/`: **[`run/README.md`](run/README.md)**.
+- Roadmap técnico: **[`docs/escalabilidad.md`](docs/escalabilidad.md)**.
+- TRL, limitaciones: [`docs/posicionamiento_trl.md`](docs/posicionamiento_trl.md).
+- Arquitectura de validación: [`docs/arquitectura_validacion_datos.md`](docs/arquitectura_validacion_datos.md).
 - Integración web IEO: [`docs/integracion_web_ieo.md`](docs/integracion_web_ieo.md).
-- Operación, Docker y marco TRL (TFM): [`docs/operacion_tfm.md`](docs/operacion_tfm.md).
-- Smoke test E2E: `python scripts/e2e_smoke.py` (ver `--help`).
-- Registro de arranque del visor (apéndices): `outputs/audit/registro_ejecuciones.md` (generado en local; carpeta ignorada en git).
+- Operación y Docker: [`docs/operacion_tfm.md`](docs/operacion_tfm.md).
+- Smoke test E2E: `python scripts/e2e_smoke.py --help`.

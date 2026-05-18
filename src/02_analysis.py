@@ -3,15 +3,12 @@ Módulo de Análisis y Pronóstico Operativo Oceánico (WGMLEARN)
 =============================================================
 
 Este script representa el componente `02_analysis.py` de la arquitectura ODA.
-Recoge los datos procesados/saneados por el Agente Inspector y aplica un
-modelado predictivo (Time Series Forecasting) para proyectar 5 años hacia
-el futuro, calculando intervalos de confianza (95%).
+Incluye agregación mensual, descomposición Marcos (tendencia + Fourier) y
+bandas de incertidumbre iid sobre residuos para el visor (sin modelos AR).
 
-Arquitectura de Clases:
-La lógica está encapsulada en `OceanForecaster`, una clase base preparada
-para ser extendida en el futuro con Foundation Models de Deep Learning 
-(ej. TimeGPT, PatchTST). Actualmente utiliza un modelo estadístico tipo ARIMA
-como baseline robusto.
+La clase `OceanForecaster` queda como baseline Statsmodels para pronóstico
+operativo legacy; el visor Streamlit usa `decompose_marcos_holdout_last_n` y
+`marcos_iid_bands_on_residuals`.
 """
 
 import pandas as pd
@@ -37,7 +34,6 @@ FORECAST_HORIZON_YEARS = 5       # Años a predecir hacia el futuro
 CONFIDENCE_LEVEL = 0.05           # Alpha para intervalo del 95% (1 - 0.95 = 0.05)
 TARGET_VARIABLE = "temperatura"  # Variable principal a pronosticar
 FOURIER_K = 3                     # Nº de armónicos (K) para estacionalidad mensual continua
-AR1_FORECAST_MONTHS = 6           # Horizonte corto AR(1): 3–6 meses recomendado (WGINOR)
 # ==========================================
 
 def monthly_bin_and_anomaly(
@@ -167,80 +163,6 @@ def fit_fourier_seasonality(
     seasonal_hat = X_all @ coef
     seasonal = pd.Series(seasonal_hat.astype(float), index=work[col_fecha])
     return {"coef": coef, "seasonal": seasonal}
-
-
-def ar1_fit(x: pd.Series) -> Dict[str, float]:
-    """
-    Ajuste AR(1) por MCO:
-      X_t = c + φ X_{t-1} + ε_t
-
-    Devuelve:
-      c, phi, sigma (desv. típ. innovación), n (muestras efectivas)
-    """
-    s = pd.to_numeric(x, errors="coerce").dropna().astype(float)
-    if len(s) < 3:
-        return {"c": float("nan"), "phi": float("nan"), "sigma": float("nan"), "n": float(len(s))}
-
-    y = s.iloc[1:].to_numpy()
-    xlag = s.iloc[:-1].to_numpy()
-    X = np.column_stack([np.ones_like(xlag), xlag])
-    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-    c = float(beta[0])
-    phi = float(beta[1])
-
-    resid = y - (c + phi * xlag)
-    dof = max(1, len(resid) - 2)
-    sigma = float(np.sqrt(np.sum(resid**2) / dof))
-    return {"c": c, "phi": phi, "sigma": sigma, "n": float(len(s))}
-
-
-def ar1_forecast(
-    *,
-    last_x: float,
-    c: float,
-    phi: float,
-    sigma: float,
-    steps: int,
-    start_date: pd.Timestamp,
-    z: float = 1.96,
-) -> pd.DataFrame:
-    """
-    Forecast AR(1) h pasos (mensual) con IC aproximado.
-
-    Varianza acumulada del error de predicción:
-      Var_h = σ^2 * Σ_{i=0..h-1} φ^{2i}
-    """
-    steps = int(max(0, steps))
-    if steps == 0:
-        return pd.DataFrame(columns=["fecha", "ar1_mean", "ar1_lower", "ar1_upper"])
-
-    fechas = pd.date_range(start=start_date, periods=steps, freq="MS")
-    means = np.empty(steps, dtype=float)
-    ses = np.empty(steps, dtype=float)
-
-    x_prev = float(last_x)
-    for h in range(1, steps + 1):
-        x_hat = float(c + phi * x_prev)
-        means[h - 1] = x_hat
-
-        # Σ φ^{2i} desde i=0..h-1
-        if abs(phi) < 1e-12:
-            var_h = float((sigma**2) * 1.0)
-        else:
-            var_h = float((sigma**2) * (1.0 - (phi ** (2 * h))) / (1.0 - phi**2))
-        ses[h - 1] = float(np.sqrt(max(0.0, var_h)))
-
-        x_prev = x_hat
-
-    out = pd.DataFrame(
-        {
-            "fecha": fechas,
-            "ar1_mean": means,
-            "ar1_lower": means - z * ses,
-            "ar1_upper": means + z * ses,
-        }
-    )
-    return out
 
 
 class OceanForecaster:
@@ -452,52 +374,194 @@ def process_station_forecast(df_station: pd.DataFrame, station_name: str, target
         df_future["temp_deseasonal_fourier"] = np.nan
         df_future["anomalia_fourier"] = np.nan
 
-    # ----------------------------------------------------------
-    # (C) AR(1) SOBRE ANOMALÍA MENSUAL + FORECAST CORTO (3–6 meses)
-    # ----------------------------------------------------------
-    ar1 = ar1_fit(df_historical["anomalia_mensual"])
-    c = float(ar1["c"])
-    phi = float(ar1["phi"])
-    sigma = float(ar1["sigma"])
-
-    # Guardar parámetros AR(1) como metadatos repetidos (fácil consumo en viz)
-    for df_ in (df_historical, df_future):
-        df_["ar1_c"] = c
-        df_["ar1_phi"] = phi
-        df_["ar1_sigma"] = sigma
-
-    # Fitted 1-step (histórico): c + phi * X_{t-1}
-    x_hist = pd.to_numeric(df_historical["anomalia_mensual"], errors="coerce")
-    df_historical["ar1_fitted_1step"] = c + phi * x_hist.shift(1)
-    df_historical["ar1_resid_1step"] = x_hist - df_historical["ar1_fitted_1step"]
-
-    # Forecast AR(1) (solo primeros N meses futuros, por estándar operativo)
-    last_obs = x_hist.dropna()
-    if last_obs.empty or not np.isfinite(c) or not np.isfinite(phi) or not np.isfinite(sigma):
-        df_future["ar1_anom_mean"] = np.nan
-        df_future["ar1_anom_lower"] = np.nan
-        df_future["ar1_anom_upper"] = np.nan
-    else:
-        start_date = pd.to_datetime(df_historical["fecha"].max()) + pd.DateOffset(months=1)
-        steps = int(min(AR1_FORECAST_MONTHS, len(df_future)))
-        df_ar1f = ar1_forecast(
-            last_x=float(last_obs.iloc[-1]),
-            c=c,
-            phi=phi,
-            sigma=sigma,
-            steps=steps,
-            start_date=pd.to_datetime(start_date),
-        )
-        df_future = df_future.merge(df_ar1f, on="fecha", how="left")
-        df_future.rename(
-            columns={"ar1_mean": "ar1_anom_mean", "ar1_lower": "ar1_anom_lower", "ar1_upper": "ar1_anom_upper"},
-            inplace=True,
-        )
-        # Para meses más allá del horizonte corto, quedan NaN (intencional).
-    
     # 5. Concatenar Histórico + Futuro
     df_final = pd.concat([df_historical, df_future], ignore_index=True)
     return df_final
+
+
+def decompose_marcos_holdout_last_n(
+    df: pd.DataFrame,
+    *,
+    col_fecha: str = "fecha",
+    col_y: str = "temp_5m",
+    holdout_months: int = 12,
+    K: int = FOURIER_K,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Modelo base tipo Marcos: tendencia lineal + estacionalidad anual (Fourier mensual).
+    Reserva los últimos ``holdout_months`` con observación como holdout (sin ajustar).
+
+    Devuelve un DataFrame alineado a malla mensual ``MS`` entre la primera y última fecha
+    con dato, con columnas: ``fecha``, ``observation``, ``fitted``, ``residual``, ``is_holdout``.
+    """
+    work = df[[col_fecha, col_y]].copy()
+    work[col_fecha] = pd.to_datetime(work[col_fecha], errors="coerce")
+    work[col_y] = pd.to_numeric(work[col_y], errors="coerce")
+    work = work.dropna(subset=[col_fecha]).sort_values(col_fecha)
+    obs_dates = sorted(pd.DatetimeIndex(work.loc[work[col_y].notna(), col_fecha]).unique())
+    n_obs = len(obs_dates)
+    meta_empty: Dict[str, Any] = {"holdout_months": 0, "cutoff_holdout_start": None, "error": "serie vacía"}
+    if n_obs < 4:
+        return pd.DataFrame(), meta_empty
+
+    min_pts_train = 2 * int(max(1, K)) + 3
+    hm = int(max(1, holdout_months))
+    hm = min(hm, max(1, n_obs - min_pts_train))
+    if hm >= n_obs:
+        hm = max(1, n_obs - min_pts_train)
+    if hm < 1 or n_obs - hm < min_pts_train:
+        return pd.DataFrame(), {**meta_empty, "error": "insuficientes meses para holdout + entrenamiento"}
+
+    cutoff = pd.Timestamp(obs_dates[-hm]).normalize()
+
+    t_min = pd.Timestamp(obs_dates[0]).normalize()
+    t_max = pd.Timestamp(obs_dates[-1]).normalize()
+    full_idx = pd.date_range(t_min, t_max, freq="MS")
+    grid = pd.DataFrame({"fecha": full_idx})
+    grid = grid.merge(
+        work.rename(columns={col_fecha: "fecha", col_y: "_y_obs"}),
+        on="fecha",
+        how="left",
+    )
+
+    t_mon = _month_index(grid["fecha"])
+    t_lin = np.arange(len(grid), dtype=float)
+    cols_X = [np.ones(len(grid), dtype=float), t_lin]
+    for k in range(1, int(max(1, K)) + 1):
+        w = 2.0 * np.pi * k * t_mon / 12.0
+        cols_X.append(np.sin(w))
+        cols_X.append(np.cos(w))
+    X_all = np.column_stack(cols_X)
+
+    train_mask = grid["_y_obs"].notna().to_numpy() & (grid["fecha"].to_numpy() < np.datetime64(cutoff))
+    if int(train_mask.sum()) < min_pts_train:
+        return pd.DataFrame(), {**meta_empty, "error": "muy pocos puntos de entrenamiento"}
+
+    y_tr = grid.loc[train_mask, "_y_obs"].to_numpy(dtype=float)
+    X_tr = X_all[train_mask, :]
+    coef, *_ = np.linalg.lstsq(X_tr, y_tr, rcond=None)
+    fitted = X_all @ coef
+
+    out = pd.DataFrame(
+        {
+            "fecha": grid["fecha"],
+            "observation": grid["_y_obs"],
+            "fitted": fitted.astype(float),
+            "residual": grid["_y_obs"].to_numpy(dtype=float) - fitted,
+            "is_holdout": (grid["fecha"] >= cutoff).to_numpy(),
+        }
+    )
+    meta_m: Dict[str, Any] = {
+        "holdout_months": hm,
+        "cutoff_holdout_start": cutoff,
+        "fourier_K": int(K),
+    }
+    return out, meta_m
+
+
+def marcos_iid_bands_on_residuals(
+    rs: pd.Series,
+    *,
+    cutoff_holdout_start: pd.Timestamp,
+    holdout_months: int,
+    fechas: pd.Series | None = None,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Bandas de incertidumbre tipo ATAC (visualización) con error iid gaussiano sobre residuos Marcos.
+
+    - σ = desv. típica de residuos de entrenamiento.
+    - Pronóstico de residuo en holdout: media 0 (sin memoria / sin AR).
+    - Bandas constantes: ± z · σ en residuo; en la figura se suman a ``fitted``.
+    """
+    from scipy.stats import norm
+
+    cutoff = pd.Timestamp(cutoff_holdout_start).normalize()
+    rs = pd.Series(pd.to_numeric(rs, errors="coerce"), dtype=float).sort_index()
+    rs = rs[~rs.index.duplicated(keep="last")]
+    rs_clean = rs.dropna()
+
+    z95, z75, z50 = float(norm.ppf(0.975)), float(norm.ppf(0.875)), float(norm.ppf(0.75))
+
+    if rs_clean.size > 1:
+        sigma = float(rs_clean.std(ddof=1))
+    elif rs_clean.size == 1:
+        sigma = 0.0
+    else:
+        sigma = 1.0
+    if not np.isfinite(sigma) or sigma <= 0:
+        sigma = 1.0
+
+    meta_a: Dict[str, Any] = {
+        "error_model": "marcos_iid_gaussian",
+        "residual_sigma": sigma,
+        "n_residuals_train": int(rs_clean.size),
+    }
+
+    if fechas is not None:
+        all_dates = pd.DatetimeIndex(pd.to_datetime(fechas, errors="coerce").dropna().unique()).sort_values()
+    else:
+        start_d = rs_clean.index.min() if len(rs_clean) else cutoff
+        end_d = cutoff + pd.DateOffset(months=max(0, int(holdout_months) - 1))
+        all_dates = pd.date_range(pd.Timestamp(start_d).normalize(), end_d, freq="MS")
+
+    holdout_end = cutoff + pd.DateOffset(months=max(0, int(holdout_months) - 1))
+
+    fc_rows: dict[str, list[float]] = {
+        "resid_fc_mean": [],
+        "resid_fc_lo_95": [],
+        "resid_fc_hi_95": [],
+        "resid_fc_lo_75": [],
+        "resid_fc_hi_75": [],
+        "resid_fc_lo_50": [],
+        "resid_fc_hi_50": [],
+    }
+    train_lo_95: list[float] = []
+    train_hi_95: list[float] = []
+
+    for ts in all_dates:
+        ts = pd.Timestamp(ts).normalize()
+        train_lo_95.append(-z95 * sigma)
+        train_hi_95.append(z95 * sigma)
+
+        if ts < cutoff or ts > holdout_end:
+            for fk in fc_rows:
+                fc_rows[fk].append(float("nan"))
+            continue
+
+        months_from_cutoff = (ts.year - cutoff.year) * 12 + (ts.month - cutoff.month)
+        if months_from_cutoff >= int(holdout_months):
+            for fk in fc_rows:
+                fc_rows[fk].append(float("nan"))
+            continue
+
+        fc_rows["resid_fc_mean"].append(0.0)
+        fc_rows["resid_fc_lo_95"].append(-z95 * sigma)
+        fc_rows["resid_fc_hi_95"].append(z95 * sigma)
+        fc_rows["resid_fc_lo_75"].append(-z75 * sigma)
+        fc_rows["resid_fc_hi_75"].append(z75 * sigma)
+        fc_rows["resid_fc_lo_50"].append(-z50 * sigma)
+        fc_rows["resid_fc_hi_50"].append(z50 * sigma)
+
+    out = pd.DataFrame({"fecha": all_dates, "resid_lo_95": train_lo_95, "resid_hi_95": train_hi_95})
+    for k, vals in fc_rows.items():
+        out[k] = vals
+    return out, meta_a
+
+
+def atac_holdout_bands_on_residuals(
+    rs: pd.Series,
+    *,
+    cutoff_holdout_start: pd.Timestamp,
+    holdout_months: int,
+    fechas: pd.Series | None = None,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Alias histórico: bandas sin AR (Marcos + residuos iid)."""
+    return marcos_iid_bands_on_residuals(
+        rs,
+        cutoff_holdout_start=cutoff_holdout_start,
+        holdout_months=holdout_months,
+        fechas=fechas,
+    )
 
 
 def main():
@@ -511,7 +575,7 @@ def main():
     
     if not input_file.exists():
         logger.error(f"Archivo de entrada no encontrado: {input_file}")
-        logger.error("Asegúrese de ejecutar primero '01_agent_inspector.py'")
+        logger.error("Asegúrese de que el archivo de entrada procesado existe en data/checked/")
         return
         
     df_processed = pd.read_csv(input_file)
@@ -575,8 +639,6 @@ def main():
     print(" - `anomalia_mensual`      : `yhat` (mensual) - `climatologia_mes` del mismo mes (también en pronóstico).")
     print(" - `seasonal_fourier`      : componente estacional continuo (K armónicos) ajustado sobre el histórico mensual.")
     print(" - `temp_deseasonal_fourier`: `yhat` - `seasonal_fourier` (señal sin ciclo intra‑anual continuo).")
-    print(" - `ar1_phi`/`ar1_c`       : parámetros AR(1) ajustados sobre `anomalia_mensual` histórica.")
-    print(" - `ar1_anom_mean` (+IC)   : forecast AR(1) corto (primeros meses futuros; resto NaN por diseño).")
     print("-" * 80)
     print(f"[OK] Archivo exportado -> {output_file.relative_to(project_root)}")
     print("="*80 + "\n")

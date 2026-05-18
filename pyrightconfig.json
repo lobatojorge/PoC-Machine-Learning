@@ -3,5 +3,5 @@
   "venv": "venv",
   "pythonVersion": "3.11",
   "include": ["src", "run"],
-  "ignore": ["src/03_visualization.py"]
+  "ignore": []
 }

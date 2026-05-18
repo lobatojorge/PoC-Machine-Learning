@@ -85,6 +85,21 @@ def test_clean_parquet_cache_token_changes(tmp_path: Path) -> None:
     assert t1 != t2
 
 
+def test_load_pipeline_viewer_multi_part_clean(tmp_path: Path) -> None:
+    root = tmp_path / "proj"
+    rr = root / "outputs" / "runs" / "run_parts"
+    data_dir = rr / "data"
+    data_dir.mkdir(parents=True)
+    df_a = _minimal_ctd_rows()
+    df_b = df_a.copy()
+    df_b["estacion"] = 2
+    df_a.to_parquet(data_dir / "cast_a.ctd_clean.parquet", index=False)
+    df_b.to_parquet(data_dir / "cast_b.ctd_clean.parquet", index=False)
+    out = pr.load_pipeline_viewer_data(rr)
+    assert out is not None
+    assert len(out.df_clean) == len(df_a) + len(df_b)
+
+
 def test_read_provenance_dict(tmp_path: Path) -> None:
     root = tmp_path / "proj"
     rr = root / "outputs" / "runs" / "run_prov"

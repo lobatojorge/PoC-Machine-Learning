@@ -71,14 +71,21 @@ def attach_radial_id(df: pd.DataFrame, *, hint_columns: tuple[str, ...] = ("acro
 
 
 def filter_dataframe_to_radial(df: pd.DataFrame, radial_id: str) -> tuple[pd.DataFrame, int]:
-    """Filtra filas a una radial; devuelve (dataframe, filas descartadas)."""
+    """
+    Filtra filas a una radial; devuelve (dataframe, filas descartadas).
+
+    CSV legacy Cudillero: ``estacion`` 1–3 ↔ E1CU/E2CU/E3CU.
+
+    Ficheros SeaBird ``.cnv`` (pipeline actual): la ingesta ya es solo Cudillero y
+    ``** Station:`` suele ser 4–8, no 1–3. Si no hay ``radial_id`` inferible y ninguna
+    fila cae en 1–3, se conservan todas las filas del Parquet (ya filtrado en paso 00a).
+    """
     work = attach_radial_id(df)
     before = len(work)
     if work["radial_id"].notna().any():
         out = work[work["radial_id"] == radial_id].copy()
         return out, before - len(out)
-    # Parquet antiguo sin pistas: solo Cudillero admite recorte por estación 1–3.
     if radial_id == RADIAL_ID_CUDILLERO and "estacion" in work.columns:
-        out = work[work["estacion"].isin([1, 2, 3])].copy()
-        return out, before - len(out)
+        # Sin radial_id en datos: ingesta .cnv ya limitada a Cudillero; no recortar a 1–3.
+        return work.copy(), 0
     return work.iloc[0:0].copy(), before

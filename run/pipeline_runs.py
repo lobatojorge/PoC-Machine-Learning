@@ -23,12 +23,26 @@ def runs_root(project_root: Path) -> Path:
     return project_root / "outputs" / "runs"
 
 
+def _data_dir(run_root: Path) -> Path:
+    return run_root / "data"
+
+
+def _glob_clean_parts(data_dir: Path) -> list[Path]:
+    if not data_dir.is_dir():
+        return []
+    consolidated = data_dir / CLEAN_PARQUET_REL.name
+    if consolidated.is_file():
+        return [consolidated]
+    return sorted(data_dir.glob("*.ctd_clean.parquet"))
+
+
 def has_valid_clean_artifact(run_root: Path) -> bool:
-    return (run_root / CLEAN_PARQUET_REL).is_file()
+    """True si hay ``perfiles_all.ctd_clean.parquet`` o al menos un ``*.ctd_clean.parquet``."""
+    return len(_glob_clean_parts(_data_dir(run_root))) > 0
 
 
 def list_valid_run_roots(project_root: Path) -> list[Path]:
-    """Corridas con ``data/perfiles_all.ctd_clean.parquet``, ordenadas por ``st_mtime`` descendente."""
+    """Corridas con Parquet limpio, ordenadas por ``st_mtime`` descendente."""
     rr = runs_root(project_root)
     if not rr.is_dir():
         return []
@@ -55,12 +69,13 @@ def resolve_run_root_for_ui(project_root: Path, selection: str) -> Path | None:
 
 
 def clean_parquet_cache_token(run_root: Path) -> str:
-    """Token de frescura para invalidar caché si el Parquet limpio cambia."""
-    p = run_root / CLEAN_PARQUET_REL
-    if not p.is_file():
+    """Token de frescura para invalidar caché (consolidado o suma de partes)."""
+    parts = _glob_clean_parts(_data_dir(run_root))
+    if not parts:
         return "missing"
-    st = p.stat()
-    return f"{st.st_mtime_ns}:{st.st_size}"
+    total_mtime = max(p.stat().st_mtime_ns for p in parts)
+    total_size = sum(p.stat().st_size for p in parts)
+    return f"{total_mtime}:{total_size}:{len(parts)}"
 
 
 def read_provenance_dict(run_root: Path) -> dict[str, Any] | None:
@@ -102,6 +117,35 @@ def prepare_radial_frame(df: pd.DataFrame) -> pd.DataFrame | None:
     return out
 
 
+def _read_clean_frame(run_root: Path) -> pd.DataFrame | None:
+    parts = _glob_clean_parts(_data_dir(run_root))
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return pd.read_parquet(parts[0])
+    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+
+
+def _read_anom_frame(run_root: Path, *, columns: pd.Index) -> pd.DataFrame:
+    data_dir = _data_dir(run_root)
+    anom_all = data_dir / ANOM_PARQUET_REL.name
+    if anom_all.is_file():
+        raw = pd.read_parquet(anom_all)
+        if raw.empty:
+            return pd.DataFrame(columns=columns)
+        prepared = prepare_radial_frame(raw)
+        return prepared if prepared is not None and not prepared.empty else pd.DataFrame(columns=columns)
+
+    parts = sorted(data_dir.glob("*.ctd_anomalies.parquet")) if data_dir.is_dir() else []
+    if not parts:
+        return pd.DataFrame(columns=columns)
+    raw = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    if raw.empty:
+        return pd.DataFrame(columns=columns)
+    prepared = prepare_radial_frame(raw)
+    return prepared if prepared is not None and not prepared.empty else pd.DataFrame(columns=columns)
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineViewerLoadResult:
     df_clean: pd.DataFrame
@@ -115,27 +159,19 @@ class PipelineViewerLoadResult:
 
 
 def load_pipeline_viewer_data(run_root: Path) -> PipelineViewerLoadResult | None:
-    """Carga limpio + anomalías desde ``run_root`` (sin caché Streamlit)."""
-    clean_p = run_root / CLEAN_PARQUET_REL
-    anom_p = run_root / ANOM_PARQUET_REL
-    if not clean_p.is_file():
+    """Carga limpio + anomalías desde ``run_root`` (consolidado o varios ``*.ctd_clean.parquet``)."""
+    parts = _glob_clean_parts(_data_dir(run_root))
+    if not parts:
         return None
-    df_c = prepare_radial_frame(pd.read_parquet(clean_p))
+
+    df_c = prepare_radial_frame(_read_clean_frame(run_root))
     if df_c is None:
         return None
     col_temp, col_sal, col_prof = _resolve_value_columns(df_c)
     if not all([col_temp, col_sal, col_prof]):
         return None
-    if anom_p.is_file():
-        raw_a = pd.read_parquet(anom_p)
-        if raw_a.empty:
-            df_a = pd.DataFrame(columns=df_c.columns)
-        else:
-            df_a = prepare_radial_frame(raw_a)
-            if df_a is None or df_a.empty:
-                df_a = pd.DataFrame(columns=df_c.columns)
-    else:
-        df_a = pd.DataFrame(columns=df_c.columns)
+
+    df_a = _read_anom_frame(run_root, columns=df_c.columns)
     viz = pd.concat(
         [df_c.assign(_viewer_anomaly=False), df_a.assign(_viewer_anomaly=True)],
         ignore_index=True,
@@ -148,5 +184,5 @@ def load_pipeline_viewer_data(run_root: Path) -> PipelineViewerLoadResult | None
         col_sal=str(col_sal),
         col_prof=str(col_prof),
         run_root=run_root,
-        clean_parquet=clean_p,
+        clean_parquet=parts[0],
     )

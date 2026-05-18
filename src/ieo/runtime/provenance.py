@@ -68,16 +68,40 @@ def build_provenance(
     input_files: list[Path],
     parameters: dict[str, Any],
     packages: dict[str, str],
+    max_hash_files: int | None = 50,
 ) -> Provenance:
+    """
+    Construye provenance de la corrida.
+
+    Si hay muchos ficheros (p. ej. miles de .cnv), solo se hashean los primeros
+    ``max_hash_files`` para no bloquear la ingesta horas antes del primer Parquet.
+  """
     inputs: list[dict[str, Any]] = []
-    for p in input_files:
+    n = len(input_files)
+    hash_limit = n if max_hash_files is None else min(n, max(0, max_hash_files))
+
+    for i, p in enumerate(input_files):
+        if i < hash_limit:
+            sha = _sha256_file(p) if p.exists() and p.is_file() else None
+        else:
+            sha = None
+        inputs.append({"path": str(p), "sha256": sha, "stat": _safe_stat(p)})
+
+    if n > hash_limit:
         inputs.append(
             {
-                "path": str(p),
-                "sha256": _sha256_file(p) if p.exists() and p.is_file() else None,
-                "stat": _safe_stat(p),
+                "note": (
+                    f"{n - hash_limit} ficheros adicionales sin SHA256 en esta corrida "
+                    f"(lote grande; ver stat por ruta o ejecutar hash puntual)."
+                )
             }
         )
+
+    params = dict(parameters)
+    params.setdefault("n_input_files", n)
+    if n > hash_limit:
+        params["sha256_computed_for"] = hash_limit
+
     created = datetime.now(timezone.utc).isoformat()
     return Provenance(
         run_id=run_id,
@@ -85,7 +109,7 @@ def build_provenance(
         python=sys.version.replace("\n", " "),
         platform=f"{platform.system()} {platform.release()} ({platform.version()})",
         inputs=inputs,
-        parameters=parameters,
+        parameters=params,
         packages=packages,
     )
 

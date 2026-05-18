@@ -22,6 +22,25 @@ instancia de un patrón genérico, no la única instancia posible.
 
 ---
 
+## Ficheros `.cnv` con varias radiales en `data/cnv/`
+
+En el IEO, la misma carpeta puede contener casts de **Gijón, Santander, Cudillero**, etc.
+La radial suele aparecer en la cabecera SeaBird:
+
+- `** Cruise: Radial Santander` / `Radial Gijón` / …
+- `RCAN_*`, `Radiales Cantábrico`, `RADCAN2013 Cudillero`: **campaña** Cantábrico; la radial producto se infiere por **lat/lon** (o por la palabra «Cudillero» en el cruise).
+- Nombre de fichero: prefijo `g` → Gijón; `s` → Santander; `jul301.cnv` sin prefijo → Cudillero si falta cruise/coords.
+
+**Orden de clasificación** (`cnv_radial.py`): coordenadas → cruise con nombre de radial → nombre de fichero.
+
+Franjas orientativas (lon W): Coruña (NW), Cudillero (≤6.0°W), Gijón (6.0–4.85°W), Santander (>4.85°W).
+
+Auditoría: `python run/audit_cnv_radials.py` → `outputs/temporal/cnv_radial_audit.csv`.
+
+El pipeline Cudillero **omite** el resto antes de la puerta de cuarentena. Prueba: `IEO_ALL_RADIALS=1`.
+
+---
+
 ## Paso 1: Registrar el dominio en el catálogo
 
 Añadir el nuevo dominio a `src/ieo/radiales_catalog.py`:

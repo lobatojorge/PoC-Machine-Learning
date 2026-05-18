@@ -22,12 +22,15 @@ El entregable no es solo una gráfica de la radial de Cudillero: es una **arquit
 
 ### Evidencias TRL 4 en este repositorio
 
-- Corridas versionadas bajo `outputs/runs/<run_id>/` con `provenance.json`.
+- Corridas versionadas bajo `outputs/runs/<run_id>/` con `provenance.json` y `run_summary.json` (salida estructurada JSON).
 - Parquet limpio y de anomalías (`*.ctd_clean.parquet`, `*.ctd_anomalies.parquet`).
+- **Puerta de cuarentena de ficheros** (`src/ieo/ingest_gate.py`): comprobación del CSV antes de ingestarlo; ficheros rechazados se copian a `data/quarantine/` con `reasons.json`.
 - Contrato de datos en código: `src/ieo/validation/radial_contract.py` (ERROR / WARNING antes del análisis en visor).
 - Detección multivariante (Isolation Forest); anomalías segregadas, no eliminadas silenciosamente.
-- Modelo Marcos + ATAC con holdout y bandas interpretables (`src/atac_monthly_report.py`).
+- Modelo Marcos con holdout y bandas iid interpretables, sin AR (`src/atac_monthly_report.py`).
+- Clasificación `.cnv` por coordenadas y metadatos (`src/ieo/io/cnv_radial.py`).
 - Visor Streamlit con tarjetas de calidad, hitos de serie, FAQ y avisos de contexto (no sustituye informe científico firmado).
+- Funciones de gráficas desacopladas del framework en `src/ieo/reports/figures_radiales.py` (Plotly puro, sin Streamlit).
 
 ### Por qué aún no es TRL 5
 
@@ -63,7 +66,7 @@ Presentarlas como **decisiones de alcance del TFM**, no como excusas.
 
 ### Repositorio
 
-- Legado Gijón (scripts `00_*`, Excel) convive con pipeline `src/ieo/`; la demo oficial es Cudillero vía `run/main.py` + `run/app.py`.
+- El código activo es `src/ieo/` (pipeline), `src/02_analysis.py` y `src/atac_monthly_report.py` (Marcos+ATAC). Los scripts históricos de Gijón/Excel han sido eliminados del árbol.
 
 ---
 

@@ -17,19 +17,24 @@ run/__pycache__/
 # ─────────────────────────────────────────────
 # Datos reales IEO y artefactos derivados
 # ─────────────────────────────────────────────
-data/raw/*
-data/interim/*
-data/processed/*
+data/cnv/*
+data/checked/*
+data/csv/*
 data/quarantine/*
-data/pending_review/*
-!data/**/.gitkeep
+!data/cnv/.gitkeep
+!data/quarantine/.gitkeep
 
 # ─────────────────────────────────────────────
 # Outputs generados (dependen de datos reales)
 # ─────────────────────────────────────────────
 outputs/figures/*
 outputs/reports/*
-!outputs/**/.gitkeep
+outputs/runs/*
+outputs/temporal/*
+outputs/audit/*
+outputs/RESUMEN_ULTIMA.html
+outputs/LEEME_RESUMEN.txt
+!outputs/temporal/.gitkeep
 
 # ─────────────────────────────────────────────
 # Documentación/archivos locales grandes o temporales

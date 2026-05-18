@@ -15,7 +15,7 @@ class ReadResult:
     Explicación práctica
     --------------------
     Un `LazyFrame` permite preparar el trabajo sin cargar todo en memoria.
-    El pipeline solo “materializa” datos al final del paso (`collect()` implícito
+    El pipeline solo "materializa" datos al final del paso (`collect()` implícito
     al escribir Parquet).
     """
 
@@ -40,15 +40,17 @@ def reader_for_path(source: Path) -> str:
     """
     Devuelve un id de lector basado en extensión.
 
-    Esto hace explícito el “enchufe” para NetCDF en Fase 2.
+    Extensiones reconocidas
+    -----------------------
+    - ``.cnv``              → ``"cnv"``   (SeaBird CTD)
+    - ``.xls`` / ``.xlsx``  → ``"excel"``
+    - ``.nc`` / ``.netcdf`` → ``"netcdf"``
     """
-
     ext = source.suffix.lower()
-    if ext == ".csv":
-        return "csv"
+    if ext == ".cnv":
+        return "cnv"
     if ext in (".xls", ".xlsx"):
         return "excel"
     if ext in (".nc", ".netcdf"):
         return "netcdf"
     raise ValueError(f"Formato no soportado: {source.name} ({ext})")
-

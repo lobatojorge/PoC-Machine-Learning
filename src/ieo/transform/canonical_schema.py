@@ -63,7 +63,10 @@ def normalize_ctd_columns(lf: pl.LazyFrame, *, schema: CTDCanonicalSchema) -> pl
 
     # Profundidad
     col_z = _first_present(
-        ["profundidad_m", "profundidad", "depth", "dep", "press", "depsm", "dep_sm", "dep_sm [m]", "prdm", "prdm [m]"],
+        [
+            "profundidad_m", "profundidad", "depth", "dep", "press", "depsm",
+            "dep_sm", "dep_sm [m]", "prdm", "prdm [m]", "prsm", "prsm [db]",
+        ],
         cols,
     )
     # Temperatura

@@ -1,7 +1,7 @@
 # Demo — IEO Orchestrator (Radial Cudillero)
 
 Reproducir la demo completa en 3 comandos.  
-Tiempo estimado: 2–5 minutos (más si el CSV es grande).
+Tiempo estimado: 2–5 minutos (depende del número de ficheros `.cnv`).
 
 ---
 
@@ -10,18 +10,19 @@ Tiempo estimado: 2–5 minutos (más si el CSV es grande).
 | Requisito | Verificación |
 |-----------|-------------|
 | Python 3.11+ | `python --version` |
-| CSV de entrada | `data/processed/perfiles_all.csv` (no incluido en git; solicitar al responsable del proyecto) |
+| Ficheros SeaBird | `data/cnv/**/*.cnv` (no incluidos en git; copiar desde el archivo del buque) |
 | Dependencias | `pip install -r run/requirements.txt` |
 
-> Si no tienes el CSV, puedes revisar la arquitectura del sistema directamente en el visor
-> si existe una corrida previa bajo `outputs/runs/`. Pasa al paso 3.
+> Si no tienes `.cnv` a mano, puedes abrir el visor si existe una corrida previa bajo `outputs/runs/`.
 
 ---
 
 ## Los 3 comandos
 
 ```bash
-# 1. Pipeline: ingesta → contrato de calidad → Isolation Forest → Parquet
+# 0. Coloca los .cnv en data/cnv/ (pueden mezclarse radiales; solo se procesa Cudillero)
+
+# 1. Pipeline: puerta de cuarentena → ingesta .cnv → contrato de calidad → Isolation Forest → Parquet
 python run/main.py
 
 # 2. Smoke test: verifica que los artefactos son correctos sin abrir el visor
@@ -41,96 +42,45 @@ Bajo `outputs/runs/<run_id>/` (generado automáticamente con timestamp):
 
 ```
 outputs/runs/<run_id>/
-├── provenance.json                          # qué CSV entró, cuándo, con qué parámetros
+├── provenance.json                              # qué .cnv entró, cuándo, con qué parámetros
+├── run_summary.json                             # resumen estructurado de la corrida
 ├── data/
-│   ├── perfiles_all.ctd_canonical.parquet  # tabla canónica (todas las filas)
-│   ├── perfiles_all.ctd_clean.parquet      # filas válidas según Isolation Forest
-│   └── perfiles_all.ctd_anomalies.parquet  # filas segregadas (no eliminadas)
+│   ├── perfiles_all.ctd_canonical.parquet      # tabla normalizada (todas las filas)
+│   ├── perfiles_all.ctd_clean.parquet          # filas válidas según Isolation Forest
+│   ├── perfiles_all.ctd_anomalies.parquet      # filas segregadas (no eliminadas)
+│   └── perfiles_all.ctd_anomaly_audit.parquet  # registro del modelo de anomalías
 └── checkpoints/
-    ├── 01_ingesta.html
-    ├── 01b_contrato_radial.html             # resultado del contrato de datos
-    └── 02_anomalias.html
+    ├── 00_gate_rejected.html    (si el fichero fue rechazado)
+    ├── 01_ingestion.html
+    ├── 01b_radial_contract.html  # resultado del contrato de datos
+    ├── 02_anomalies.html
+    └── 03_quality.html           # resumen de salud para no técnicos
 ```
+
+Además, cada ejecución actualiza **`outputs/RESUMEN_ULTIMA.html`** (resumen visual de la última corrida; en `.gitignore`).
 
 ---
 
-## Qué muestra el visor
+## Qué ver en el visor
 
-El visor (`run/app.py`) carga la corrida más reciente y presenta:
-
-1. **Tarjetas pipeline** — estado de cada paso (ingesta, contrato, anomalías, calidad).
-2. **Perfil T/S** — series T y salinidad a 5 m por estación (E1CU, E2CU, E3CU).
-3. **Contrato de datos** — cualquier ERROR o WARNING del contrato radial aparece
-   en rojo/ámbar _antes_ de los gráficos (el investigador ve el estado de calidad
-   antes de interpretar la gráfica).
-4. **Anomalías Isolation Forest** — pestaña dedicada con mapa de puntos anómalos
-   vs. limpios.
-5. **Hitos de serie** — min/max histórico, cobertura mensual, tendencia.
-6. **FAQ** — preguntas frecuentes sobre metodología y limitaciones.
+1. **Tarjetas de proveniencia** — ingesta `.cnv`, QC, anomalías, análisis Marcos+ATAC.
+2. **Pestañas por estación** — serie mensual a 5 m (T y S).
+3. **Gráfico Marcos + bandas** — tendencia, estacionalidad, residuos iid (sin AR).
+4. **Mapa del transecto** — clic en estación para cambiar pestaña.
 
 ---
 
-## Smoke test automático
+## Variables de entorno útiles
 
-```bash
-# Solo verifica pipeline existente (sin relanzar main.py):
-python scripts/e2e_smoke.py --skip-pipeline
-
-# Verifica pipeline + lanza Streamlit y comprueba el endpoint de salud:
-python scripts/e2e_smoke.py --with-streamlit
-```
-
-Salida esperada:
-```
-[e2e] OK: Parquet limpio+anomalías · run_id=... · limpias=N anómalas=M
-[e2e] OK: sin WARNING ni ERROR en contrato simulado
-[e2e] Smoke completado.
-```
+| Variable | Efecto |
+|----------|--------|
+| `IEO_ALL_RADIALS=1` | Procesa todas las radiales en `data/cnv/` (depuración). |
+| `IEO_MAX_CNV=N` | Limita a los primeros N ficheros aceptados. |
 
 ---
 
-## Tests unitarios (sin datos IEO)
+## Más documentación
 
-```bash
-pip install -r requirements-dev.txt
-pytest tests/test_contract.py tests/test_radiales_catalog.py -v
-```
-
-Los tests usan datos sintéticos: no necesitan `data/processed/perfiles_all.csv`.  
-Cubren el contrato radial, el contrato genérico y el catálogo de radiales.
-
----
-
-## Arquitectura en 60 segundos
-
-```
-CSV (datos campaña)
-   │
-   ▼  python run/main.py
-[01 Ingesta]  →  Parquet canónico  →  provenance.json
-   │
-   ▼
-[01b Contrato radial]  →  ERROR / WARNING (rangos, gradientes, deriva)
-   │
-   ▼
-[02 Isolation Forest]  →  clean.parquet + anomalies.parquet
-   │
-   ▼  streamlit run run/app.py
-[Visor]  →  tarjetas QC + series T/S + FAQ
-```
-
-El contrato de datos es **código Python ejecutable** (no un documento PDF),
-por lo que se puede versionar, probar en CI y extender a nuevos dominios.
-
----
-
-## Documentación adicional
-
-| Documento | Contenido |
-|-----------|-----------|
-| [`docs/posicionamiento_trl.md`](docs/posicionamiento_trl.md) | TRL 4, limitaciones honestas, roadmap TRL 5 |
-| [`docs/arquitectura_validacion_datos.md`](docs/arquitectura_validacion_datos.md) | Diagrama de capas; cómo transferir a otro dominio |
-| [`docs/contrato_datos_radiales.md`](docs/contrato_datos_radiales.md) | Reglas del contrato radial en detalle |
-| [`docs/domain_catalog.md`](docs/domain_catalog.md) | Cómo añadir un nuevo dominio / campaña al sistema |
-| [`docs/guion_reunion_eugenio.md`](docs/guion_reunion_eugenio.md) | Pitch 3 minutos para colaboradores |
-| [`docs/operacion_tfm.md`](docs/operacion_tfm.md) | Operación, Docker, alcance TFM |
+- [`README.md`](README.md) — visión general y arquitectura
+- [`run/README.md`](run/README.md) — scripts de ejecución
+- [`docs/operacion_tfm.md`](docs/operacion_tfm.md) — Docker, CI, troubleshooting

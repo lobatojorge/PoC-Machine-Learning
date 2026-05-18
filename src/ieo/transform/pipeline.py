@@ -30,11 +30,12 @@ class ReaderFactory:
     Fábrica de lectores por formato.
 
     Nota práctica:
-    - Hoy: CSV radial + Excel + NetCDF
+    - El pipeline de producción solo ingiere ``.cnv`` (``CnvReader``). Excel/NetCDF quedan
+      disponibles para extensiones futuras vía ``reader_for_path``.
     """
 
-    def __init__(self, *, csv: DatasetReader, excel: DatasetReader, netcdf: DatasetReader) -> None:
-        self._readers = {"csv": csv, "excel": excel, "netcdf": netcdf}
+    def __init__(self, *, cnv: DatasetReader, excel: DatasetReader, netcdf: DatasetReader) -> None:
+        self._readers = {"cnv": cnv, "excel": excel, "netcdf": netcdf}
 
     def reader_for(self, source: Path) -> DatasetReader:
         key = reader_for_path(source)
@@ -50,7 +51,7 @@ def build_canonical_lazyframe(
     run_id: str,
 ) -> tuple[pl.LazyFrame, list[str]]:
     """
-    Lee un dataset (CSV/Excel/NetCDF) y devuelve un LazyFrame canónico.
+    Lee un dataset (``.cnv`` en producción) y devuelve un LazyFrame canónico.
     """
 
     run_paths.ensure()
