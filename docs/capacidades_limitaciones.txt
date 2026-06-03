@@ -1,0 +1,101 @@
+===============================================================================
+SISTEMA DE AUDITORÍA Y ALERTA TEMPRANA PARA SERIES TEMPORALES
+===============================================================================
+
+Este sistema automatiza la ingesta, control de calidad, detección de anomalías 
+y modelado predictivo de series temporales de datos ambientales y de sensores 
+(aplicado a campañas oceanográficas, pero extrapolable a cualquier dominio).
+
+Funciona como un escudo de calidad y alerta temprana: desde que el dato se toma
+en el campo hasta su visualización e interpretación científica.
+
+
+1. GARANTÍAS MEDIBLES PARA UN INVESTIGADOR
+-------------------------------------------------------------------------------
+* Cobertura de Control (100%): Garantiza que ningún dato corrupto o sin origen
+  identificado entre a la base de datos principal, separándolos al instante.
+* Detección Automática de Errores Físicos: Identifica de forma inmediata y 
+  automatizada cualquier valor fuera de rango natural, saltos drásticos no
+  físicos en el perfil, o inconsistencias geográficas de muestreo.
+* Aislamiento de Desviaciones Estadísticas: Detecta y etiqueta de forma objetiva
+  combinaciones inusuales de variables que escapan a las reglas tradicionales.
+* Indicador Visual de Desviación Climática: Al proyectar las bandas de rango 
+  histórico esperado frente a las nuevas observaciones, permite saber al instante
+  si una campaña reciente muestra una anomalía real (cambio climático, eventos
+  extremos) o si entra dentro de la variabilidad normal.
+* Cuantificación del Muestreo: Reporta automáticamente los porcentajes de 
+  cobertura temporal y los meses sin datos de forma clara y unificada.
+
+
+2. CAPACIDADES PRINCIPALES
+-------------------------------------------------------------------------------
+* Control de Acceso Automatizado (Cuarentena): Separa y clasifica de forma 
+  automática archivos dañados o con metadatos erróneos, organizando el motivo
+  del rechazo para facilitar su corrección por los técnicos de campaña.
+* Reglas de Dominio Flexibles (Contrato de Datos): Permite definir umbrales de 
+  tolerancia física específicos para cada variable (ej. temperatura, salinidad) 
+  tanto en el dato bruto como en las tendencias agregadas.
+* Agregación Robusta sin Mezcla Espacial: Para representar resúmenes mensuales, 
+  selecciona de forma automática el lance físico más representativo y profundo, 
+  evitando difuminar las masas de agua con medias aritméticas artificiales.
+* Proyección y Bandas de Confianza: Modela la tendencia histórica y el ciclo 
+  estacional recurrente para dibujar un canal de comportamiento esperable en
+  diferentes niveles de probabilidad (50%, 75% y 95%).
+* Interfaz de Usuario Intuitiva: Centrada en el investigador, con alertas 
+  visuales semafóricas del estado del dato y gráficos interactivos limpios.
+
+
+3. NO ES "GREAT EXPECTATIONS" (DISEÑO A MEDIDA)
+-------------------------------------------------------------------------------
+* El sistema NO utiliza frameworks genéricos y pesados de calidad de datos 
+  corporativos (como Great Expectations). 
+* Se ha diseñado una solución propia y ultraligera optimizada específicamente 
+  para datos físicos y oceanográficos. Esto reduce drásticamente el consumo de 
+  memoria y CPU, acelera los tiempos de ejecución y facilita la personalización 
+  de las reglas físicas sin necesidad de configurar infraestructuras complejas.
+
+
+4. GRADO DE MADUREZ (¿CÓMO DE CERCA ESTÁ DE SER UN PRODUCTO TERMINADO?)
+-------------------------------------------------------------------------------
+* Estado actual: TRL 4 (Tecnología validada en laboratorio). El motor lógico, 
+  la detección de anomalías y la interfaz visual interactiva están completamente
+  desarrollados y validados con datos históricos reales y sintéticos.
+* Qué está listo: El pipeline de auditoría incremental, el sistema de cuarentena,
+  las reglas de calidad física y el visor para el análisis del investigador.
+* Qué falta para ser un producto final (TRL 5/6): Despliegue en un servidor 
+  institucional permanente (actualmente funciona en entorno local de pruebas), 
+  automatización del flujo directo desde los barcos de campaña, y pulido de la 
+  interfaz para dar soporte multi-sitio completo en pantalla principal.
+
+
+5. PARA QUÉ SE NECESITA FINANCIACIÓN (LÍNEAS DE INVERSIÓN)
+-------------------------------------------------------------------------------
+* Despliegue e Infraestructura TI: Alojar la plataforma en servidores en la nube
+  o corporativos seguros, con URLs estables, certificados HTTPS y sistemas de 
+  autenticación y gestión de embargos de datos para campañas recientes.
+* Automatización de Datos en Flujo: Crear los servicios y conectores automáticos 
+  que escaneen e ingesten los archivos generados en el buque al instante sin 
+  intervención de un operador manual.
+* Panel de Administración Científico: Desarrollar una interfaz web que permita 
+  a los investigadores editar y actualizar los límites de calidad y umbrales 
+  físicos en caliente, sin necesidad de tocar archivos de configuración.
+* Integración de Modelos de IA Avanzados: Incorporar modelos predictivos de 
+  última generación entrenados con series temporales globales para mejorar la 
+  precisión del pronóstico de alerta temprana frente al modelo estadístico basal.
+* Escalado a Nuevas Redes de Sensores: Calibrar y documentar los umbrales de 
+  calidad para otras regiones y puertos, expandiendo el sistema de alerta a 
+  escala nacional o multivariante.
+
+
+6. LIMITACIONES METODOLÓGICAS Y DE DISEÑO
+-------------------------------------------------------------------------------
+* Dependencia del Histórico: Requiere una serie temporal mínima inicial para 
+  poder entrenar y calcular el ciclo estacional y las bandas de confianza.
+* Calibración de Umbrales: El filtrado físico depende de límites definidos por
+  expertos; umbrales muy holgados dejarán pasar errores y umbrales muy estrictos 
+  generarán falsas alertas en eventos extremos naturales.
+* Naturaleza Estadística (No Física): Las alertas tempranas y proyecciones
+  se basan en comportamiento estadístico e histórico de los datos; no es un 
+  simulador físico-químico o dinámico de masas de agua.
+* Formato de Entrada Estructurado: Aunque es adaptable, los datos de entrada
+  deben seguir una estructura o mapeo de columnas predefinible para su lectura.

@@ -18,17 +18,18 @@ import polars as pl
 
 from ieo.io.base import ReadResult
 from ieo.io.cnv_header import (
+    parse_station_from_folder_name,
     CNV_NAME_LINE_RE,
     CNV_START_TIME_RE,
+    _MONTHS,
+    _start_time_iso_from_match,
     parse_cnv_station_number_from_path,
     parse_cnv_start_time_iso_from_path,
+    parse_station_from_folder_name,
+    parse_station_from_filename,
+    reconcile_start_time_year,
 )
-from ieo.radiales_catalog import identify_radial
-
-_MONTHS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-}
+from ieo.io.cnv_radial import classify_cnv_radial, read_cnv_radial_hints
 
 
 def _parse_cnv_header(lines: list[str]) -> tuple[list[str], str | None, int]:
@@ -49,13 +50,7 @@ def _parse_cnv_header(lines: list[str]) -> tuple[list[str], str | None, int]:
 
         m_time = CNV_START_TIME_RE.search(stripped)
         if m_time and start_time_iso is None:
-            mon_str = m_time.group(1).lower()[:3]
-            mon = _MONTHS.get(mon_str)
-            if mon:
-                day = int(m_time.group(2))
-                year = int(m_time.group(3))
-                hh, mm, ss = int(m_time.group(4)), int(m_time.group(5)), int(m_time.group(6))
-                start_time_iso = f"{year:04d}-{mon:02d}-{day:02d}T{hh:02d}:{mm:02d}:{ss:02d}"
+            start_time_iso = _start_time_iso_from_match(m_time)
 
     return col_names, start_time_iso, data_start_line
 
@@ -72,6 +67,8 @@ class CnvReader:
         col_names, start_time_iso, data_start_line = _parse_cnv_header(all_lines)
         if start_time_iso is None:
             start_time_iso = parse_cnv_start_time_iso_from_path(source)
+
+        start_time_iso = reconcile_start_time_year(start_time_iso, source)
 
         if not col_names:
             raise ValueError(
@@ -112,19 +109,34 @@ class CnvReader:
             lf = lf.with_columns(ts.alias("fecha"))
 
         st_num = parse_cnv_station_number_from_path(source)
+        if st_num is None:
+            st_num = parse_station_from_folder_name(source)
+        if st_num is None:
+            st_num = parse_station_from_filename(source)
+            
         if st_num is not None and "estacion" not in schema_cols:
             lf = lf.with_columns(pl.lit(st_num).cast(pl.Int32).alias("estacion"))
 
         if "cast" not in schema_cols and "acronimo" not in lf.collect_schema().names():
             lf = lf.with_columns(pl.lit(source.stem).alias("cast"))
 
-        cast_col = "cast" if "cast" in lf.collect_schema().names() else None
-        if cast_col:
-            lf = lf.with_columns(
-                pl.col(cast_col)
-                .map_elements(identify_radial, return_dtype=pl.Utf8)
-                .alias("radial_id")
-            )
+        rid = classify_cnv_radial(source)
+        lf = lf.with_columns(pl.lit(rid).cast(pl.Utf8).alias("radial_id"))
+
+        from ieo.radial_canonical_station import resolve_canonical_station  # noqa: PLC0415
+
+        hints = read_cnv_radial_hints(source)
+        st_folder = parse_station_from_folder_name(source)
+        canon = resolve_canonical_station(
+            rid or "",
+            cast=source.stem,
+            source_file=source.name,
+            station_sbe=st_num,
+            station_folder=st_folder,
+            cruise=hints.cruise,
+        )
+        if canon is not None:
+            lf = lf.with_columns(pl.lit(int(canon)).cast(pl.Int32).alias("estacion_canonica"))
 
         handoff = {
             "source": source.name,

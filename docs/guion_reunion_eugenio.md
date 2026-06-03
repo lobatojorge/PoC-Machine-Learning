@@ -21,16 +21,17 @@ Mostrar diagrama en `docs/arquitectura_validacion_datos.md`:
 5. Análisis temporal con holdout (Marcos + ATAC)  
 6. Visor que explica calidad, no solo dibuja líneas  
 
-**Demo:** radial Cudillero (IEO), temperatura y salinidad a 5 m, tres estaciones. **TRL 4:** funciona con datos reales en entorno de laboratorio / demo, reproducible con `python run/main.py` y `streamlit run run/app.py`.
+**Demo:** **Gijón** (E1GI–E4GI), temperatura y salinidad a 5 m; pipeline ingiere **todas** las radiales en `data/cnv/`. **TRL 4:** datos reales, reproducible con `python run/main.py` y `streamlit run run/app.py`.
 
-### 3. Limitaciones — cuatro bullets (45 s)
+### 3. Limitaciones — tres orígenes (45 s)
 
-| Bloque | Mensaje corto |
+Ver tabla completa en [`posicionamiento_trl.md`](posicionamiento_trl.md).
+
+| Origen | Mensaje corto |
 |--------|----------------|
-| Datos | Un caso profundo (Cudillero); CSV hoy, `.cnv` en camino; no es plataforma nacional de radiales aún |
-| Ciencia | Contrato Python propio (no GX); IF para atípicos; el visor no certifica informes |
-| Producto | Streamlit = demostrador; integración web IEO pendiente de TI |
-| Alcance TFM | Patrón reutilizable; la gráfica concreta es la prueba, no el producto final |
+| **Financiación / institución** | Sin servidor IEO, login ni embargos; integración web y operación 24/7 dependen de TI y presupuesto |
+| **Metodología** | Marcos + iid, holdout 1 mes, IF + contrato físico; el visor diagnostica, no certifica publicación |
+| **Alcance TFM** | Streamlit manual; UI más pulida en Gijón; corridas largas mitigadas con caché incremental |
 
 ### 4. Transferencia a otros dominios (30 s)
 
@@ -38,9 +39,9 @@ El mismo patrón aplica a **series temporales de volcanes, sensores o campañas 
 
 ### 5. Siguiente paso (15 s)
 
-- **2 semanas:** demo reproducible + documentación TRL (O1–O2).  
+- **Conseguido:** demo reproducible + documentación TRL (O1–O3) y visor presentación Gijón.  
 - **Trimestre:** piloto en URL estable + ingesta `.cnv` si TI responde (TRL 5).  
-- **No prometemos:** todas las radiales, GX integrado, portal IEO definitivo mañana.
+- **No prometemos:** todas las radiales en la misma pantalla de producto mañana, GX integrado de serie, portal IEO definitivo inmediato.
 
 ---
 
@@ -48,7 +49,7 @@ El mismo patrón aplica a **series temporales de volcanes, sensores o campañas 
 
 | Limitación técnica | Cómo decirlo sin debilitar el proyecto |
 |--------------------|--------------------------------------|
-| Solo Cudillero en demo | “Profundizamos un caso para validar la arquitectura antes de escalar radiales” |
+| Solo Cudillero en demo | Obsoleto: la demo fija **Gijón**; el pipeline es **multi-radial** y el visor puede consumir Parquet filtrado por radial (hoy solo se expone Gijón en UI de presentación) |
 | Streamlit | “Demostrador rápido; la arquitectura no depende de Streamlit” |
 | Sin Great Expectations | “Expectativas codificadas en contrato Python; GX es opción institucional futura” |
 | IF no es verdad física | “Capa de alerta multivariante; el científico decide” |
@@ -70,10 +71,10 @@ El mismo patrón aplica a **series temporales de volcanes, sensores o campañas 
 
 ## Demo en vivo (checklist)
 
-1. `cd run` · `pip install -r requirements.txt` (si hace falta).  
-2. `python main.py` (o mostrar corrida existente en `outputs/runs/`).  
-3. `streamlit run app.py` → Cudillero → E1CU → Temperatura.  
-4. Señalar: tarjetas de calidad, gráfica, hitos, FAQ, aviso ámbar de contrato.  
+1. `cd` al repo · `pip install -r run/requirements.txt` (si hace falta).  
+2. `python run/main.py` (o mostrar corrida existente en `outputs/runs/`).  
+3. `streamlit run run/app.py` → embudo hero + datos Gijón (Parquet rápido si hay corrida) → pestañas Temperatura/Salinidad → **botones E1GI–E4GI** · mapas abajo como contexto.  
+4. Señalar: cifras de fuente/fechas cuando hay Parquet de pipeline, embudo narrado de pasos (sin jerga de herramientas), gráfica, FAQ si procede, aviso ámbar de contrato.  
 5. Mencionar: “no sustituye informe firmado”.
 
 Smoke automatizado: `python scripts/e2e_smoke.py --skip-pipeline` (si ya hay corrida).

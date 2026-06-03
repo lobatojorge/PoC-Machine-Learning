@@ -1,5 +1,5 @@
 """
-Puerta de entrada para ficheros SeaBird ``.cnv`` antes de la ingesta del pipeline.
+Control previo (ingest_gate) para ficheros SeaBird ``.cnv`` antes de la ingesta del pipeline.
 
 Comprobaciones (nivel fichero):
 1. Existencia y extensión ``.cnv``.
@@ -24,11 +24,16 @@ from ieo.io.cnv_header import (
 # Columnas en cabecera SBE (minúsculas tras parseo)
 _TEMP_CANDIDATES = {
     "temperatura_c", "temperatura", "temp", "temperature",
-    "t090c", "t068", "tv290c", "ts068",
+    "t090c", "t068", "t068c", "tv290c", "ts068", "potemp068", "potemp068c",
 }
 _PROF_CANDIDATES = {
-    "profundidad_m", "profundidad", "depth", "dep", "press", "depsm",
-    "prdm", "prsm", "sigma0", "sigma-theta", "sigma_theta",
+    "profundidad_m", "profundidad", "depth", "dep", "depsm", "deps", "dep_sm",
+    "prdm", "prdm [m]", "prsm", "prsm [db]",
+    # Presión en psi (``prSE``) solo si no hay profundidad en metros
+    "prse",
+    "press",
+    "pr",
+    "sigma0", "sigma-theta", "sigma_theta",
 }
 _TIME_COL_CANDIDATES = {
     "fecha", "date", "datetime", "time", "timestamp",

@@ -142,8 +142,11 @@ def build_atac_monthly_figure(
     base["fecha"] = pd.to_datetime(base["fecha"], errors="coerce")
     base["temp_5m"] = pd.to_numeric(base["temp_5m"], errors="coerce")
     base = base.dropna(subset=["fecha"]).sort_values("fecha")
+    from ieo.validation.radial_contract import filter_sampling_dates_pandas  # noqa: PLC0415
+
+    base, _ = filter_sampling_dates_pandas(base, col_fecha="fecha")
     if base.empty:
-        raise ValueError("Serie mensual vacía.")
+        raise ValueError("Serie mensual vacía tras filtrar fechas fuera de rango operativo.")
 
     gap_lines, gap_summary = _describe_long_month_gaps(base["fecha"], min_gap_months=3)
 
@@ -226,12 +229,12 @@ def build_atac_monthly_figure(
             )
         )
 
-    from ieo.reports.plot_gaps import add_line_markers_by_segments, add_lines_only_by_segments  # noqa: PLC0415
+    from ieo.reports.plot_gaps import add_lines_only_by_segments  # noqa: PLC0415
 
     obs_df = work.loc[ok]
-    ht = f"%{{x|%b %Y}}<br>Modelo base: %{{y:.3g}} {var_units}<extra></extra>"
+    ht = f"modelo:(%{{y:.2f}} {var_units})<extra></extra>"
 
-    # (2) Ajuste base (Marcos) — tramos entre meses consecutivos
+    # (2) Ajuste base (Marcos) — línea discontinua por tramos entre meses consecutivos
     add_lines_only_by_segments(
         fig,
         obs_df["fecha"],
@@ -240,19 +243,22 @@ def build_atac_monthly_figure(
         line=dict(color="#104E8B", width=1.8, dash="dash"),
         legendgroup="modelo",
         hovertemplate=ht,
+        hoverlabel=dict(namelength=0),
     )
 
-    # (3) Observación — marcadores; línea solo en tramos contiguos
-    add_line_markers_by_segments(
-        fig,
-        obs_df["fecha"],
-        obs_df["observation"],
-        name="Observación",
-        line=dict(color="#104E8B", width=1.0),
-        marker=dict(color="#104E8B", size=7, symbol="circle-open"),
-        legendgroup="obs",
-        legendgrouptitle_text="Observación",
-        hovertemplate=f"%{{x|%b %Y}}<br>{var_label}: %{{y:.3g}} {var_units}<extra></extra>",
+    # (3) Observación — solo marcadores
+    fig.add_trace(
+        go.Scatter(
+            x=obs_df["fecha"],
+            y=obs_df["observation"],
+            mode="markers",
+            name="Observación",
+            marker=dict(color="#104E8B", size=7, symbol="circle-open"),
+            legendgroup="obs",
+            legendgrouptitle_text="Observación",
+            hovertemplate=f"(%{{y:.2f}} {var_units})<extra></extra>",
+            hoverlabel=dict(namelength=0),
+        )
     )
 
     # (4) Pronóstico (holdout) — tonos rojizos, apilando porcentajes en leyenda
@@ -284,10 +290,11 @@ def build_atac_monthly_figure(
                     line=dict(width=0),
                     fill="tonexty",
                     fillcolor=f"rgba(139,26,26,{alpha_fill})",
-                    name=f"banda {lab}%",
+                    name="Bandas (95%, 75%, 50%)" if lab == "95" else f"banda {lab}%",
+                    showlegend=(lab == "95"),
                     hoverinfo="skip",
                     legendgroup="forecast",
-                    legendgrouptitle_text="Pronóstico",
+                    legendgrouptitle_text="Pronóstico" if lab == "95" else None,
                 )
             )
         add_lines_only_by_segments(
@@ -297,15 +304,37 @@ def build_atac_monthly_figure(
             name="media",
             line=dict(color=red, width=2.0),
             legendgroup="forecast",
-            hovertemplate=f"%{{x|%b %Y}}<br>Pronóstico: %{{y:.3g}} {var_units}<extra></extra>",
+            hovertemplate=f"modelo:(%{{y:.2f}} {var_units})<extra></extra>",
+            hoverlabel=dict(namelength=0),
         )
+        # Bandas invisibles con un solo mes: reforzar con segmentos verticales
+        if len(wf) == 1:
+            row = wf.iloc[0]
+            fx = row["fecha"]
+            for lab, alpha_fill in [("95", 0.30), ("75", 0.22), ("50", 0.14)]:
+                lo = f"temp_fc_lo_{lab}"
+                hi = f"temp_fc_hi_{lab}"
+                if lo not in wf.columns or hi not in wf.columns:
+                    continue
+                y0, y1 = float(row[lo]), float(row[hi])
+                fig.add_trace(
+                    go.Scatter(
+                        x=[fx, fx],
+                        y=[y0, y1],
+                        mode="lines",
+                        line=dict(width=6, color=f"rgba(139,26,26,{alpha_fill + 0.25})"),
+                        showlegend=False,
+                        hoverinfo="skip",
+                        legendgroup="forecast",
+                    )
+                )
 
     cutoff_txt = cutoff.strftime("%Y-%m")
     sigma_txt = meta_a.get("residual_sigma", "n/d")
 
     fig.update_layout(
         template="simple_white",
-        height=560,
+        height=400,
         hovermode="x unified",
         title=dict(
             text=f"{var_label} mensual · {station_label} · {depth_m} m",
@@ -314,17 +343,16 @@ def build_atac_monthly_figure(
             xanchor="left",
             pad=dict(l=6, t=4),
         ),
-        # Leyenda horizontal debajo de la gráfica — evita solapamiento con el título
         legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
             xanchor="left",
-            x=0.0,
+            x=1.02,
             font=dict(size=11),
         ),
-        margin=dict(t=44, b=110),
-        xaxis=dict(title=""),
+        margin=dict(t=50, b=40, r=150),
+        xaxis=dict(title="", hoverformat="%B %Y"),
         yaxis=dict(title=f"{var_units}"),
     )
 
@@ -343,14 +371,20 @@ def build_atac_monthly_figure(
         f"sube en verano y baja en invierno. Antes, con datos de varias radiales mezcladas, ese patrón quedaba "
         f"enmascarado por la dispersión.",
 
+        f"¿Cómo se agrupan los datos si hay varios lances en un mismo mes?|||"
+        f"Si en un mismo mes se realizan varias campañas o lances de CTD, <b>no se calcula la media</b> de los valores. "
+        f"En su lugar, el sistema selecciona el lance que ha alcanzado la <b>mayor profundidad máxima (z_max)</b>. "
+        f"Esto garantiza la integridad del perfil vertical (los lances menos profundos suelen ser lances abortados o de prueba) "
+        f"y evita sesgar o difuminar las masas de agua mezclando campañas de fechas distintas.",
+
         f"¿Qué es la banda azul?|||"
         f"Muestra el <b>rango esperable</b> del ajuste Marcos (±95 % sobre residuos iid, σ≈{sigma_txt}). "
         f"No hay memoria en el error: la anchura es <b>constante</b>, no crece mes a mes.",
 
         f"¿Qué es el tramo rojo?|||"
-        f"Los últimos <b>{holdout_eff} meses</b> (desde {cutoff_txt}) se excluyen del ajuste para "
-        f"comprobar cómo responde el modelo en datos que no ha visto. "
-        f"Si los puntos caen dentro de la banda 95%, el comportamiento reciente es coherente con el histórico.",
+        f"El <b>último mes con observación</b> ({cutoff_txt}) se excluye del ajuste: el pronóstico "
+        f"se calcula solo con meses anteriores. "
+        f"Si el punto cae dentro de la banda 95%, el valor reciente es coherente con el histórico.",
 
         f"¿Por qué hay períodos sin puntos?|||"
         f"{gap_answer}",

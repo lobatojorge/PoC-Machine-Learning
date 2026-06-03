@@ -1,0 +1,9 @@
+* Fichero CNV corrupto — sin cabecera SeaBird valida
+* MOTIVO: faltan las lineas "# name N = var: ..." que definen columnas.
+*         El ingest_gate.py detectara ausencia de columnas y enviara
+*         este fichero a data/quarantine/ con reasons.json explicando el fallo.
+* No hay linea # start_time =
+* No hay columnas de temperatura ni profundidad detectables.
+*END*
+ 999.99  -999.99   0.00
+ 999.99  -999.99   0.00

@@ -1,6 +1,6 @@
 # Arquitectura de validación y auditoría de datos
 
-Patrón genérico implementado en IEO Orchestrator y demostrado en la radial de **Cudillero**. Pensado para reutilizarse en otras campañas (p. ej. series temporales en volcanología, sensores ambientales, otros transectos costeros).
+Patrón genérico implementado en IEO Orchestrator; **demostrado con datos Cantábrico** multi-radial en pipeline (`data/cnv/`) y **visor de demo priorizado en radial Gijón**. Pensado para reutilizarse en otras campañas (p. ej. series temporales en volcanología, sensores ambientales, otros transectos costeros).
 
 ---
 
@@ -89,12 +89,18 @@ flowchart TB
 ### 3. Contrato de datos
 
 - Reglas declarativas en Python con severidad **ERROR** (bloquea gráfica en visor) y **WARNING** (contexto tras interpretar).
+- Incluye comprobación de **rango de años** en la columna canónica `fecha` (metadatos de muestreo plausibles), además de rangos físicos y saltos en perfil/serie mensual.
 - No sustituye el juicio científico; formaliza umbrales acordados.
 - **Código:** `src/ieo/validation/radial_contract.py` · **Doc:** `docs/contrato_datos_radiales.md`.
 
 ### 4. Observabilidad
 
-- Isolation Forest multivariante (T, S, profundidad) con semilla fija.
+- Isolation Forest multivariante (columnas numéricas con <40 % NaN) con semilla fija (`random_state=42`).
+- `contamination=0.05` en el pipeline (paso 02): se asume hasta un **5 %** de filas atípicas **por estrato** (radial × banda de profundidad). Valor fijo y reproducible; más conservador que el `"auto"` de sklearn (~10 %). Ninguna fila se elimina: las anómalas van a Parquet separado y son trazables.
+- Estratificación opcional por `radial_id` y banda de profundidad: cada estrato entrena su propio modelo, evitando que los extremos válidos de una radial sean percibidos como anómalos desde la perspectiva de otra.
+- Columnas categóricas codificadas como enteros (`estacion`, `cast`) excluidas de las features.
+- Columnas con >40% de NaN excluidas (imputación poco fiable a esa tasa).
+- `top_features` guardado solo para filas anómalas (audit más ligero).
 - Filas anómalas en Parquet separado; trazables en informes HTML.
 - **Código:** `src/ieo/observability/anomaly.py`, paso 02 del pipeline.
 
@@ -107,8 +113,11 @@ flowchart TB
 
 ### 6. Visor gobernado
 
-- Consume Parquet de la corrida seleccionada, no el CSV crudo.
-- Tarjetas de calidad, hitos, preguntas frecuentes, avisos de contrato en lenguaje claro.
+- Consume preferentemente **Parquet limpio de la corrida** filtrando por radial activa (`run/pipeline_runs.py` → `run/app.py`); lectura intensiva desde `.cnv` como respaldo cuando no hay artefactos útiles para esa radial/corrida.
+- Capa de presentación («early warning»): hero + embudo narrado de pasos, mapas contextualizados (`viewer_presentation.py`, `figures_radiales.py`).
+- Selección de estación mediante **widgets nativos Streamlit** (botones/pestañas) para reducir carga por interacciones redundantes Plotly · mapas Plotly siguen disponibles pero no son el disparador único ni el más pesado.
+- FAQs, badges de cobertura/última campaña/fuente, avisos de contrato bajo serie en lenguaje claro cuando aplica.
+
 - **Código:** `run/app.py`.
 
 ---
@@ -134,11 +143,11 @@ El visor y el pipeline comparten las mismas funciones; Streamlit solo renderiza 
 
 ## Caso demostrado vs producto genérico
 
-| Aspecto | Genérico (arquitectura) | Demo actual (Cudillero) |
-|---------|-------------------------|-------------------------|
+| Aspecto | Genérico (arquitectura) | Demo actual (Cantábrico multi-radial) |
+|---------|-------------------------|---------------------------------------|
 | Esquema canónico | Sí | CTD radial |
-| Contrato | Sí | T, S, serie mensual, saltos verticales |
-| Visor | Sí | T/S @ 5 m, 3 estaciones |
+| Contrato | Sí | T, S y salinidad vertical, serie mensual con lagunas, series cortas |
+| Visor | Sí | T/S @ 5 m, 3 estaciones Gijón (hero) |
 | Despliegue | Diseño | Streamlit local / URL demo |
 
 ---

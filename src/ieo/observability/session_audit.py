@@ -22,20 +22,20 @@ from typing import Any
 
 
 AUDIT_FILE_REL = Path("outputs") / "audit" / "registro_ejecuciones.md"
-_CUDILLERO_PATHS_MOD = "_ieo_repo_cudillero_paths_audit"
+_PATHS_MOD = "_ieo_repo_paths_audit"
 
 
 def _default_radial_csv_path(project_root: Path) -> Path:
-    """Misma lógica que `ieo.cudillero_paths` sin `import ieo.*` (Streamlit / pip homónimo)."""
-    if _CUDILLERO_PATHS_MOD not in sys.modules:
-        cp = Path(__file__).resolve().parents[1] / "cudillero_paths.py"
-        spec = importlib.util.spec_from_file_location(_CUDILLERO_PATHS_MOD, cp)
+    """Misma lógica que `ieo.paths` sin `import ieo.*` (Streamlit / pip homónimo)."""
+    if _PATHS_MOD not in sys.modules:
+        cp = Path(__file__).resolve().parents[1] / "paths.py"
+        spec = importlib.util.spec_from_file_location(_PATHS_MOD, cp)
         if spec is None or spec.loader is None:  # pragma: no cover
             raise ImportError(f"No se encuentra {cp}")
         mod = importlib.util.module_from_spec(spec)
-        sys.modules[_CUDILLERO_PATHS_MOD] = mod
+        sys.modules[_PATHS_MOD] = mod
         spec.loader.exec_module(mod)
-    return sys.modules[_CUDILLERO_PATHS_MOD].default_radial_csv_path(project_root)
+    return sys.modules[_PATHS_MOD].default_radial_csv_path(project_root)
 
 
 def _radial_csv_exists(project_root: Path) -> bool:

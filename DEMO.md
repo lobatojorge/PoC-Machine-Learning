@@ -1,4 +1,4 @@
-# Demo — IEO Orchestrator (Radial Cudillero)
+# Demo — IEO Orchestrator (radiales Cantábrico)
 
 Reproducir la demo completa en 3 comandos.  
 Tiempo estimado: 2–5 minutos (depende del número de ficheros `.cnv`).
@@ -20,19 +20,21 @@ Tiempo estimado: 2–5 minutos (depende del número de ficheros `.cnv`).
 ## Los 3 comandos
 
 ```bash
-# 0. Coloca los .cnv en data/cnv/ (pueden mezclarse radiales; solo se procesa Cudillero)
+# 0. Coloca los .cnv en data/cnv/ (mezcla de radiales OK; el pipeline ingiere todas por defecto)
 
-# 1. Pipeline: puerta de cuarentena → ingesta .cnv → contrato de calidad → Isolation Forest → Parquet
+# 1. Pipeline (consola estructurada: datos → pasos → barras de progreso → resultados → hint Streamlit)
 python run/main.py
 
 # 2. Smoke test: verifica que los artefactos son correctos sin abrir el visor
 python scripts/e2e_smoke.py --skip-pipeline
 
-# 3. Visor: exploración interactiva con tarjetas de calidad
+# 3. Visor: demo Gijón (Parquet de corrida si existe; si no, `.cnv`); estaciones por botones
 streamlit run run/app.py
 ```
 
 El visor arranca en `http://localhost:8501`.
+
+Al final del paso 02, la consola muestra **cuántas filas** marcó Isolation Forest (`contamination=0.05`, 5 % por estrato) y **dónde revisarlas** (Parquet `*_ctd_anomalies`, `checkpoints/02_anomalies.html`, `outputs/RESUMEN_ULTIMA.html`) — sin listar cada fichero en pantalla.
 
 ---
 
@@ -52,7 +54,7 @@ outputs/runs/<run_id>/
 └── checkpoints/
     ├── 00_gate_rejected.html    (si el fichero fue rechazado)
     ├── 01_ingestion.html
-    ├── 01b_radial_contract.html  # resultado del contrato de datos
+    ├── 01b_radial_contract.html  # contrato (T/S/prof + años en `fecha`)
     ├── 02_anomalies.html
     └── 03_quality.html           # resumen de salud para no técnicos
 ```
@@ -63,10 +65,10 @@ Además, cada ejecución actualiza **`outputs/RESUMEN_ULTIMA.html`** (resumen vi
 
 ## Qué ver en el visor
 
-1. **Tarjetas de proveniencia** — ingesta `.cnv`, QC, anomalías, análisis Marcos+ATAC.
-2. **Pestañas por estación** — serie mensual a 5 m (T y S).
-3. **Gráfico Marcos + bandas** — tendencia, estacionalidad, residuos iid (sin AR).
-4. **Mapa del transecto** — clic en estación para cambiar pestaña.
+1. **Embudo y mapa Cantábrico** — narrativa de pasos (early warning) + contexto geográfico (**Gijón** resaltado; la demo está fijada a esta radial).
+2. **Pestañas Temperatura / Salinidad** — botones de estación (E1GI–E4GI en Gijón); profundidad activa 5 m.
+3. **Serie a 5 m** — marcadores por campaña; pronóstico solo del **último mes** (no usado en el ajuste).
+4. **Transecto (abajo)** — metodología y mapa del transecto; la estación elegida es la de los **botones de arriba** (no hay que depender del clic en el mapa).
 
 ---
 
@@ -74,8 +76,14 @@ Además, cada ejecución actualiza **`outputs/RESUMEN_ULTIMA.html`** (resumen vi
 
 | Variable | Efecto |
 |----------|--------|
-| `IEO_ALL_RADIALS=1` | Procesa todas las radiales en `data/cnv/` (depuración). |
+| `IEO_PIPELINE_RADIAL=cudillero` (u otro id) | Acota la corrida a ficheros clasificados como esa radial (misma cadena de validación; menos CPU). Ids: `cudillero`, `gijon`, `santander`, `coruna`, `vigo`. |
+| `IEO_ONLY_CUDILLERO=1` | Equivale a `IEO_PIPELINE_RADIAL=cudillero` (compatibilidad). |
+| `IEO_ALL_RADIALS=1` | Redundante con el valor por defecto (se muestra aviso en consola). |
 | `IEO_MAX_CNV=N` | Limita a los primeros N ficheros aceptados. |
+| `IEO_FULL_REBUILD=1` | Ignora caché incremental; reprocesa todo. |
+| `IEO_QC_WORKERS=N` | Procesos paralelos en calidad/anomalías (por defecto ≈ CPU−1, máx. 8). |
+| `IEO_REUSE_QC=0` | Fuerza recalcular Isolation Forest en el run actual. |
+| `IEO_SAMPLING_YEAR_MIN` / `IEO_SAMPLING_YEAR_MAX` | Ajustan el rango de años permitido en la columna canónica `fecha` (contrato 01b y QC del visor). Ver [`docs/contrato_datos_radiales.md`](docs/contrato_datos_radiales.md). |
 
 ---
 
@@ -84,3 +92,4 @@ Además, cada ejecución actualiza **`outputs/RESUMEN_ULTIMA.html`** (resumen vi
 - [`README.md`](README.md) — visión general y arquitectura
 - [`run/README.md`](run/README.md) — scripts de ejecución
 - [`docs/operacion_tfm.md`](docs/operacion_tfm.md) — Docker, CI, troubleshooting
+- [`docs/posicionamiento_trl.md`](docs/posicionamiento_trl.md) — TRL 4, limitaciones por origen (financiación / metodología / TFM)

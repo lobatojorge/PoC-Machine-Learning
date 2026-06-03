@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 
-from ieo.cudillero_paths import cnv_dir
-from ieo.io.cnv_header import parse_cnv_station_number_from_path
+from ieo.paths import cnv_dir
+from ieo.io.cnv_header import parse_cnv_station_number_from_path, parse_station_from_folder_name
 from ieo.io.cnv_radial import classify_cnv_radial, read_cnv_radial_hints
+from ieo.radial_canonical_station import resolve_canonical_station, station_display_name
 from ieo.radiales_catalog import (
     RADIAL_ID_CORUNA,
     RADIAL_ID_CUDILLERO,
@@ -104,10 +105,19 @@ def build_radial_geo_index(project_root: Path) -> RadialGeoIndex:
         city_counts[rid] += 1
 
         st_num = parse_cnv_station_number_from_path(path)
-        if st_num is not None:
-            st_lats[rid][int(st_num)].append(lat)
-            st_lons[rid][int(st_num)].append(lon)
-            st_counts[rid][int(st_num)] += 1
+        canon = resolve_canonical_station(
+            rid,
+            cast=path.stem,
+            source_file=path.name,
+            station_sbe=st_num,
+            station_folder=parse_station_from_folder_name(path),
+            cruise=hints.cruise,
+        )
+        st_key = int(canon) if canon is not None else (int(st_num) if st_num is not None else None)
+        if st_key is not None:
+            st_lats[rid][st_key].append(lat)
+            st_lons[rid][st_key].append(lon)
+            st_counts[rid][st_key] += 1
 
     cities: list[RadialCityMarker] = []
     for rid in VIEWER_RADIAL_IDS:
@@ -133,7 +143,7 @@ def build_radial_geo_index(project_root: Path) -> RadialGeoIndex:
                     estacion=int(st_num),
                     lat=_median_coord(st_lats[rid][st_num]),
                     lon=_median_coord(st_lons[rid][st_num]),
-                    nombre=f"Estación {st_num} · {label}",
+                    nombre=f"{station_display_name(rid, st_key)} · {label}",
                     n_cnv=st_counts[rid][st_num],
                 )
             )

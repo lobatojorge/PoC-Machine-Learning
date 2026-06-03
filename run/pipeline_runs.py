@@ -13,6 +13,8 @@ from typing import Any
 
 import pandas as pd
 
+from ieo.validation.radial_contract import filter_sampling_dates_pandas
+
 CLEAN_PARQUET_REL = Path("data") / "perfiles_all.ctd_clean.parquet"
 ANOM_PARQUET_REL = Path("data") / "perfiles_all.ctd_anomalies.parquet"
 PROVENANCE_REL = Path("provenance.json")
@@ -105,6 +107,9 @@ def prepare_radial_frame(df: pd.DataFrame) -> pd.DataFrame | None:
     out["fecha"] = pd.to_datetime(out["fecha"], errors="coerce")
     if out["fecha"].isna().all():
         return None
+    out, _n_bad = filter_sampling_dates_pandas(out, col_fecha="fecha")
+    if out.empty:
+        return None
     if "estacion" not in cols:
         return None
     out["estacion"] = pd.to_numeric(out["estacion"], errors="coerce")
@@ -123,7 +128,12 @@ def _read_clean_frame(run_root: Path) -> pd.DataFrame | None:
         return None
     if len(parts) == 1:
         return pd.read_parquet(parts[0])
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    try:
+        import pyarrow.dataset as ds
+        dataset = ds.dataset([str(p) for p in parts], format="parquet")
+        return dataset.to_table().to_pandas()
+    except ImportError:
+        return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 
 def _read_anom_frame(run_root: Path, *, columns: pd.Index) -> pd.DataFrame:
@@ -139,7 +149,12 @@ def _read_anom_frame(run_root: Path, *, columns: pd.Index) -> pd.DataFrame:
     parts = sorted(data_dir.glob("*.ctd_anomalies.parquet")) if data_dir.is_dir() else []
     if not parts:
         return pd.DataFrame(columns=columns)
-    raw = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    try:
+        import pyarrow.dataset as ds
+        dataset = ds.dataset([str(p) for p in parts], format="parquet")
+        raw = dataset.to_table().to_pandas()
+    except ImportError:
+        raw = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
     if raw.empty:
         return pd.DataFrame(columns=columns)
     prepared = prepare_radial_frame(raw)

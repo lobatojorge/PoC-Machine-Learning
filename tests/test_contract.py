@@ -15,6 +15,8 @@ Estructura
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -26,6 +28,8 @@ from ieo.validation.radial_contract import (
     validate_canonical_ctd_polars,
     validate_monthly_radial_series,
     validate_profile_dataframe,
+    filter_sampling_dates_pandas,
+    validate_sampling_dates_pandas,
 )
 from ieo.validation.generic_series_contract import (
     GenericContractThresholds,
@@ -238,6 +242,61 @@ def test_canonical_polars_ok() -> None:
 def test_canonical_polars_bad_type() -> None:
     viols = validate_canonical_ctd_polars("no es un dataframe")
     assert any(v.severity == ViolationSeverity.ERROR for v in viols)
+
+
+def test_filter_sampling_dates_drops_nat() -> None:
+    df = pd.DataFrame({"fecha": [pd.NaT, "2020-01-01"], "estacion": [1, 1]})
+    out, n = filter_sampling_dates_pandas(df, col_fecha="fecha")
+    assert n == 1
+    assert len(out) == 1
+
+
+def test_filter_sampling_dates_drops_future_year() -> None:
+    df = pd.DataFrame(
+        {
+            "fecha": pd.to_datetime(["2020-01-01", "2080-06-01", "1995-03-01"]),
+            "estacion": [1, 1, 1],
+        }
+    )
+    out, n = filter_sampling_dates_pandas(df, col_fecha="fecha")
+    assert n == 1
+    assert len(out) == 2
+    assert out["fecha"].dt.year.max() <= 2035
+
+
+def test_sampling_dates_future_year_error() -> None:
+    df = pd.DataFrame({"fecha": pd.to_datetime(["2020-01-01", "2080-06-01"])})
+    viols = validate_sampling_dates_pandas(df, col_fecha="fecha")
+    assert any(
+        v.code == "sampling_date_out_of_calendar_range" and v.severity == ViolationSeverity.ERROR for v in viols
+    )
+
+
+def test_sampling_dates_within_custom_max_ok() -> None:
+    df = pd.DataFrame({"fecha": pd.to_datetime(["2080-06-01"])})
+    th = replace(DEFAULT_THRESHOLDS, sampling_year_max=2100)
+    viols = validate_sampling_dates_pandas(df, col_fecha="fecha", thresholds=th)
+    assert not any(v.code == "sampling_date_out_of_calendar_range" for v in viols)
+
+
+def test_canonical_polars_future_year_in_profile() -> None:
+    try:
+        import polars as pl
+    except ImportError:
+        pytest.skip("polars no instalado")
+
+    df = pl.from_pandas(
+        pd.DataFrame(
+            {
+                "fecha": pd.to_datetime(["2021-03-01", "2080-01-01"]),
+                "estacion": [1, 1],
+                "profundidad_m": [5.0, 5.0],
+                "temperatura_c": [14.5, 14.0],
+            }
+        )
+    )
+    viols = validate_canonical_ctd_polars(df)
+    assert any(v.code == "sampling_date_out_of_calendar_range" for v in viols)
 
 
 # ---------------------------------------------------------------------------

@@ -13,11 +13,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ieo.radial_labels import label_es
+
 _EXIT_LABELS: dict[int, tuple[str, str]] = {
     0: ("ok", "Ejecución completada correctamente"),
     1: ("warn", "Ejecución terminada con errores (ingesta, contrato o anomalías)"),
     2: ("warn", "No se encontraron ficheros .cnv de entrada"),
-    3: ("bad", "Todos los ficheros fueron rechazados por la puerta de cuarentena"),
+    3: ("bad", "Todos los ficheros fueron rechazados en el control previo (cuarentena)"),
 }
 
 
@@ -25,69 +27,204 @@ def _esc(s: object) -> str:
     return html.escape(str(s), quote=True)
 
 
+def _filtro_ingesta_legible(filtro: str) -> str:
+    if filtro == "todas":
+        return "Todas las radiales (pipeline completo; por defecto)"
+    return f"{label_es(filtro)} — alcance `IEO_PIPELINE_RADIAL={filtro}`"
+
+
+def _filtro_ingesta_corto(filtro: str) -> str:
+    if filtro == "todas":
+        return "Todas las radiales"
+    return label_es(filtro)
+
+
 def format_ingest_console(ingest: dict[str, Any]) -> str:
-    """Texto multilínea para consola."""
-    lines = [
-        "  --- Ingesta .cnv ---",
-        f"  Filtro activo                : {ingest.get('filtro_radial', 'cudillero')}",
-        f"  Encontrados en data/cnv/     : {ingest.get('n_cnv_encontrados', 0)}",
-        f"  Candidatos Cudillero         : {ingest.get('n_cudillero_candidatos', 0)}",
-        f"  Omitidos (otras radiales)    : {ingest.get('n_omitidas_otra_radial', 0)}",
-        f"  Pasaron la puerta            : {ingest.get('n_puerta_ok', 0)}",
-        f"  Cuarentena                   : {ingest.get('n_cuarentena', 0)}",
-        f"  Parquet canónico generados   : {ingest.get('n_parquet_canonicos', 0)}",
-        f"  Error tras la puerta         : {ingest.get('n_error_tras_puerta', 0)}",
-        f"  Copias a data/checked/       : {ingest.get('copias_a_data_checked', 0)}",
+    """Resumen multilínea para consola: inventario por ciudad y cifras de la ejecución."""
+    filtro = str(ingest.get("filtro_radial", "todas"))
+    lines: list[str] = ["", "  --- Inventario data/cnv (por ciudad) ---"]
+
+    inv = ingest.get("inventario_por_radial") or {}
+    if inv:
+        w = max((len(label_es(rid)) for rid in inv), default=8)
+        for rid, count in sorted(inv.items(), key=lambda x: (-x[1], x[0])):
+            lines.append(f"    {label_es(rid):<{w}}  {count:>5}")
+        if ingest.get("inventario_total"):
+            lines.append(f"    {'TOTAL':<{w}}  {ingest['inventario_total']:>5}")
+    else:
+        lines.append("    (sin desglose por radial)")
+
+    lines.append("")
+    lines.append("  --- Esta ejecución ---")
+    rows: list[tuple[str, object]] = [
+        ("Alcance", _filtro_ingesta_corto(filtro)),
+        ("Evaluados (control previo)", ingest.get("n_cudillero_candidatos", 0)),
+        ("Fuera de alcance (en disco)", ingest.get("n_omitidas_otra_radial", 0)),
+        ("Aceptados -> ingesta", ingest.get("n_puerta_ok", 0)),
+        ("Rechazados -> cuarentena", ingest.get("n_cuarentena", 0)),
+        ("Parquet canónicos", ingest.get("n_parquet_canonicos", 0)),
+        ("Canónicos reutilizados (caché)", ingest.get("n_canonical_reutilizados", 0)),
+        ("Canónicos nuevos (ingesta)", ingest.get("n_canonical_nuevos", 0)),
+        ("QC restaurado desde caché", ingest.get("n_qc_desde_cache", 0)),
+        ("Errores al generar Parquet", ingest.get("n_error_tras_puerta", 0)),
+        ("Copias a data/checked/", ingest.get("copias_a_data_checked", 0)),
     ]
+    label_w = max(len(k) for k, _ in rows)
+    for k, v in rows:
+        lines.append(f"    {k:<{label_w}}  {v}")
+
+    n_ny = int(ingest.get("n_cnv_non_year_shards") or 0)
+    if n_ny > 0:
+        ny = ingest.get("cnv_non_year_shard_counts") or {}
+        parts = ", ".join(f"{k}={v}" for k, v in sorted(ny.items(), key=lambda x: -x[1])[:6])
+        lines.append(f"    Lotes sin carpeta AAAA  {n_ny} ({parts})")
+
     omitidas = ingest.get("omitidas_por_radial") or {}
-    if omitidas:
-        lines.append("  Omitidos por radial (conteo):")
-        for rid, count in sorted(omitidas.items(), key=lambda x: -x[1])[:6]:
-            lines.append(f"    · {rid}: {count}")
+    if omitidas and filtro != "todas":
+        lines.append("    Omitidos (otras ciudades):")
+        for rid, count in sorted(omitidas.items(), key=lambda x: -x[1])[:8]:
+            lines.append(f"      {label_es(rid):<14}  {count:>5}")
+
     motivos = ingest.get("motivos_cuarentena") or {}
     if motivos:
-        lines.append("  Motivos cuarentena (resumen):")
+        lines.append("")
+        lines.append("  --- Motivos de rechazo (conteo) ---")
         for reason, count in sorted(motivos.items(), key=lambda x: -x[1])[:8]:
-            short = reason if len(reason) <= 90 else reason[:87] + "…"
-            lines.append(f"    · [{count}] {short}")
-    muestra = ingest.get("muestra_cuarentena") or []
-    if muestra:
-        lines.append("  Ejemplos rechazados:")
-        for item in muestra[:5]:
-            name = item.get("file", "?")
-            rs = item.get("reasons") or []
-            r0 = rs[0] if rs else "?"
-            if len(r0) > 80:
-                r0 = r0[:77] + "…"
-            lines.append(f"    · {name}: {r0}")
+            short = reason if len(reason) <= 72 else reason[:69] + "..."
+            lines.append(f"    [{count:>4}]  {short}")
+
+    n_des = sum(
+        1
+        for x in (ingest.get("muestra_omitidas_radial") or [])
+        if str(x.get("radial")) == "desconocida"
+    )
+    if n_des:
+        lines.append(f"    Sin clasificar (radial)  {n_des}  (detalle en HTML/checkpoints)")
+
     nota = ingest.get("nota_data_checked")
-    if nota:
-        lines.append(f"  Nota: {nota}")
+    if nota and str(nota).strip():
+        lines.append(f"    Nota  {str(nota).strip()}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_run_footer(
+    *,
+    run_id: str,
+    exit_code: int,
+    steps_ok: list[str],
+    steps_failed: list[str],
+    n_anomalies: int,
+    contract_errors: int,
+    n_quarantine: int,
+    artifacts: dict[str, str],
+) -> str:
+    """Pie compacto tras terminar el pipeline."""
+    status = {0: "OK", 1: "con avisos", 2: "sin .cnv", 3: "todo rechazado"}.get(exit_code, "?")
+    lines = [
+        "",
+        "  --- Resultado ---",
+        f"    Run ID              {run_id}",
+        f"    Estado              {status} (código {exit_code})",
+    ]
+    if steps_ok:
+        lines.append(f"    Pasos OK            {', '.join(steps_ok)}")
+    if steps_failed:
+        lines.append(f"    Pasos con error     {', '.join(steps_failed)}")
+    lines.append(f"    Anomalías (IF)      {n_anomalies}")
+    lines.append(f"    Errores contrato    {contract_errors}")
+    if n_quarantine:
+        lines.append(f"    En cuarentena       {n_quarantine}  (data/quarantine/)")
+    if artifacts.get("clean_all"):
+        lines.append(f"    Parquet consolidado perfiles_all.ctd_clean.parquet")
+    lines.append("")
     return "\n".join(lines)
 
 
 def _ingest_html_block(ingest: dict[str, Any]) -> str:
-    rows = [
-        ("Filtro radial", ingest.get("filtro_radial", "cudillero")),
-        ("Ficheros .cnv en data/cnv/", ingest.get("n_cnv_encontrados", 0)),
-        ("Candidatos Cudillero", ingest.get("n_cudillero_candidatos", 0)),
-        ("Omitidos (otras radiales)", ingest.get("n_omitidas_otra_radial", 0)),
-        ("Pasaron la puerta", ingest.get("n_puerta_ok", 0)),
-        ("Enviados a cuarentena", ingest.get("n_cuarentena", 0)),
-        ("Parquet canónico generados", ingest.get("n_parquet_canonicos", 0)),
-        ("Errores tras la puerta", ingest.get("n_error_tras_puerta", 0)),
+    inv = ingest.get("inventario_por_radial") or {}
+    inv_html = ""
+    if inv:
+        inv_rows = "".join(
+            f"<tr><td>{_esc(label_es(rid))} <span class='muted'>({_esc(rid)})</span></td>"
+            f"<td><code>{_esc(count)}</code></td></tr>"
+            for rid, count in sorted(inv.items(), key=lambda x: (-x[1], x[0]))
+        )
+        inv_html = (
+            "<h3>Inventario completo en carpeta (por radial)</h3>"
+            "<table><thead><tr><th>Radial</th><th>Ficheros</th></tr></thead><tbody>"
+            f"{inv_rows}</tbody></table>"
+        )
+
+    ny_html = ""
+    n_ny = int(ingest.get("n_cnv_non_year_shards") or 0)
+    if n_ny > 0:
+        ny = ingest.get("cnv_non_year_shard_counts") or {}
+        ny_bits = ", ".join(
+            f"{_esc(k)}=<code>{_esc(v)}</code>" for k, v in sorted(ny.items(), key=lambda x: -x[1])[:12]
+        )
+        ny_html = (
+            "<h3>Lotes sin carpeta-año (primer segmento ≠ <code>AAAA</code>)</h3>"
+            f"<p><strong>{_esc(n_ny)}</strong> ficheros .cnv — {ny_bits}. "
+            "Preflight: <code>python run/preflight_cnv.py</code></p>"
+        )
+
+    pfs = ingest.get("cnv_preflight_summary")
+    pf_html = ""
+    if isinstance(pfs, dict) and pfs.get("questions"):
+        q_items = "".join(f"<li>{_esc(q)}</li>" for q in pfs["questions"][:8])
+        pf_html = (
+            "<h3>Preguntas automáticas (<code>IEO_CNV_PREFLIGHT=1</code>)</h3>"
+            f"<ol>{q_items}</ol>"
+        )
+
+    filtro = str(ingest.get("filtro_radial", "todas"))
+    pipe_rows = [
+        ("Alcance del pipeline", _filtro_ingesta_legible(filtro)),
+        ("Evaluados (control previo)", ingest.get("n_cudillero_candidatos", 0)),
+        ("No evaluados en esta ejecución (siguen en disco; visor puede abrirlos)", ingest.get("n_omitidas_otra_radial", 0)),
+        ("Aceptados → ingesta", ingest.get("n_puerta_ok", 0)),
+        ("Rechazados → cuarentena", ingest.get("n_cuarentena", 0)),
+        ("Parquet generados", ingest.get("n_parquet_canonicos", 0)),
+        ("Errores al generar Parquet", ingest.get("n_error_tras_puerta", 0)),
         ("Copias a data/checked/", ingest.get("copias_a_data_checked", 0)),
     ]
     tbody = "".join(
-        f"<tr><td>{_esc(k)}</td><td><code>{_esc(v)}</code></td></tr>" for k, v in rows
+        f"<tr><td>{_esc(k)}</td><td><code>{_esc(v)}</code></td></tr>" for k, v in pipe_rows
     )
+
     omitidas = ingest.get("omitidas_por_radial") or {}
     omitidas_html = ""
-    if omitidas:
-        omitidas_html = "<h3>Omitidos por radial (no Cudillero)</h3><ul>"
+    if omitidas and ingest.get("filtro_radial") != "todas":
+        omitidas_html = (
+            "<h3>Omitidos en esta ejecución (alcance <code>IEO_PIPELINE_RADIAL</code>)</h3>"
+            "<p class='muted'>Siguen en <code>data/cnv/</code>; el visor multi-radial puede abrirlos. "
+            "Aquí solo se lista el conteo por radial.</p><ul>"
+        )
         for rid, count in sorted(omitidas.items(), key=lambda x: -x[1])[:12]:
-            omitidas_html += f"<li><strong>{count}</strong> — {_esc(rid)}</li>"
+            omitidas_html += (
+                f"<li><strong>{count}</strong> — {_esc(label_es(rid))} "
+                f"<span class='muted'>({_esc(rid)})</span></li>"
+            )
         omitidas_html += "</ul>"
+
+    muestra_des = [
+        x
+        for x in (ingest.get("muestra_omitidas_radial") or [])
+        if str(x.get("radial")) == "desconocida"
+    ][:15]
+    des_html = ""
+    if muestra_des:
+        des_html = (
+            "<h3>Muestra sin clasificar (cruise en cabecera)</h3>"
+            "<table><thead><tr><th>Ruta bajo data/cnv</th><th>Cruise (truncado)</th></tr></thead><tbody>"
+        )
+        for item in muestra_des:
+            rel = _esc(item.get("rel") or item.get("file", "?"))
+            ch = item.get("cruise_hint") or ""
+            des_html += f"<tr><td><code>{rel}</code></td><td>{_esc(ch[:200])}</td></tr>"
+        des_html += "</tbody></table>"
+
     motivos = ingest.get("motivos_cuarentena") or {}
     motivos_html = ""
     if motivos:
@@ -95,18 +232,39 @@ def _ingest_html_block(ingest: dict[str, Any]) -> str:
         for reason, count in sorted(motivos.items(), key=lambda x: -x[1])[:15]:
             motivos_html += f"<li><strong>{count}</strong> — {_esc(reason)}</li>"
         motivos_html += "</ul>"
+    motivos_ing = ingest.get("motivos_error_ingesta") or {}
+    ingest_fail_html = ""
+    if motivos_ing:
+        detail_name = ingest.get("ingestion_failed_detail_json") or "01_ingestion_failed_detail.json"
+        ingest_fail_html = (
+            "<h3>Errores de ingesta tras puerta (sin copia a cuarentena)</h3>"
+            f"<p class='muted'>El `.cnv` sigue en <code>data/cnv/</code>. "
+            f"Listado completo en <code>checkpoints/{_esc(detail_name)}</code>.</p><ul>"
+        )
+        for reason, count in sorted(motivos_ing.items(), key=lambda x: -x[1])[:15]:
+            ingest_fail_html += f"<li><strong>{count}</strong> — {_esc(reason)}</li>"
+        ingest_fail_html += "</ul>"
     muestra = ingest.get("muestra_cuarentena") or []
     muestra_html = ""
     if muestra:
-        muestra_html = "<h3>Ejemplos rechazados</h3><table><thead><tr><th>Fichero</th><th>Motivo</th></tr></thead><tbody>"
+        muestra_html = (
+            "<h3>Ejemplos rechazados (control previo)</h3>"
+            "<table><thead><tr><th>Fichero</th><th>Motivo</th></tr></thead><tbody>"
+        )
         for item in muestra[:25]:
             rs = "; ".join(item.get("reasons") or [])
-            muestra_html += f"<tr><td><code>{_esc(item.get('file', '?'))}</code></td><td>{_esc(rs)}</td></tr>"
+            fn = item.get("file_label") or item.get("file", "?")
+            muestra_html += f"<tr><td><code>{_esc(fn)}</code></td><td>{_esc(rs)}</td></tr>"
         muestra_html += "</tbody></table>"
     nota = ingest.get("nota_data_checked", "")
     return (
-        f"<h2>Ingesta de ficheros .cnv</h2><table><tbody>{tbody}</tbody></table>"
-        f"<p class='muted'>{_esc(nota)}</p>{omitidas_html}{motivos_html}{muestra_html}"
+        f"<h2>Ingesta de ficheros .cnv</h2>"
+        f"<p class='muted'>«Control previo» = comprobaciones automáticas antes de ingestar (ingest_gate); "
+        f"si no se cumplen → cuarentena en <code>data/quarantine/</code>.</p>"
+        f"{inv_html}{ny_html}{pf_html}"
+        f"<h3>Esta ejecución del pipeline</h3><table><tbody>{tbody}</tbody></table>"
+        f"<p class='muted'>{_esc(nota)}</p>{des_html}{omitidas_html}{motivos_html}"
+        f"{ingest_fail_html}{muestra_html}"
     )
 
 
@@ -131,11 +289,25 @@ def write_resumen_ultima_html(
     rel_run = Path("runs") / run_root.name
     ingest = summary.get("ingest") or {}
     ingest_html = _ingest_html_block(ingest)
-
+    fatal = summary.get("fatal_error")
+    fatal_html = ""
+    if fatal:
+        tb = ""
+        if isinstance(ingest, dict):
+            tb = str(ingest.get("fatal_pipeline_traceback") or "")
+        fatal_html = (
+            "<h2>Error fatal</h2>"
+            f"<p><code>{_esc(fatal)}</code></p>"
+        )
+        if tb:
+            fatal_html += (
+                "<h3>Trazado (recorte)</h3>"
+                f"<pre style='white-space:pre-wrap;font-size:0.75rem;background:#fef2f2;"
+                f"padding:12px;border-radius:6px'>{_esc(tb[-8000:])}</pre>"
+            )
     steps_ok = summary.get("steps_ok") or []
     steps_fail = summary.get("steps_failed") or []
     artifacts = summary.get("artifacts") or {}
-    quarantine = summary.get("quarantine") or []
     gen = summary.get("generated_at_utc", "?")
 
     art_rows = ""
@@ -194,6 +366,7 @@ def write_resumen_ultima_html(
       <a href="{_esc((rel_run / 'checkpoints').as_posix())}/">checkpoints/</a>
     </p>
 
+    {fatal_html}
     {ingest_html}
 
     <h2>Métricas de calidad</h2>

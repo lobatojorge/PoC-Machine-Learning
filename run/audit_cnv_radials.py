@@ -17,7 +17,7 @@ _SRC = (PROJECT_ROOT / "src").resolve()
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from ieo.cudillero_paths import cnv_dir  # noqa: E402
+from ieo.paths import cnv_dir  # noqa: E402
 from ieo.io.cnv_header import parse_cnv_station_number_from_path  # noqa: E402
 from ieo.io.cnv_radial import classify_cnv_radial_detailed, read_cnv_radial_hints  # noqa: E402
 

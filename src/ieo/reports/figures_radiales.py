@@ -102,11 +102,14 @@ def build_cantabrico_radials_overview_map(
     cities: list[dict[str, float | int | str]],
     *,
     selected_radial_id: str | None = None,
+    interactive_radial_id: str | None = None,
 ) -> go.Figure:
     """
     Mapa del Cantábrico con una marca por radial (posición media de los ``.cnv``).
 
     ``customdata`` lleva ``radial_id`` para selección en Streamlit.
+    Si ``interactive_radial_id`` está definido, solo esa radial es seleccionable;
+    el resto se muestra atenuado (referencia geográfica).
     """
     center_lat, center_lon, zoom = 43.45, -5.35, 6.8
     if cities:
@@ -117,35 +120,49 @@ def build_cantabrico_radials_overview_map(
 
     fig = go.Figure()
     if cities:
-        lats = [float(c["lat"]) for c in cities]
-        lons = [float(c["lon"]) for c in cities]
-        labels = [str(c["label"]) for c in cities]
-        rids = [str(c["radial_id"]) for c in cities]
-        counts = [int(c.get("n_cnv", 0)) for c in cities]
-        sizes = [28 + min(n, 400) // 25 for n in counts]
-        colors = [
-            "#00BFFF" if rid == selected_radial_id else "#2b6cb0"
-            for rid in rids
-        ]
-        hover = [
-            f"<b>{lbl}</b><br>{n:,} perfiles .cnv con coordenadas"
-            for lbl, n in zip(labels, counts)
-        ]
-        fig.add_trace(
-            go.Scattermap(
-                lat=lats,
-                lon=lons,
-                mode="markers+text",
-                text=labels,
-                textposition="top center",
-                textfont=dict(size=11, color="#1e3a5f", family="Arial, sans-serif"),
-                marker=dict(size=sizes, color=colors, opacity=0.92),
-                customdata=np.array(rids).reshape(-1, 1),
-                hovertext=hover,
-                hovertemplate="%{hovertext}<extra></extra>",
-                showlegend=False,
+        active = [c for c in cities if not interactive_radial_id or c["radial_id"] == interactive_radial_id]
+        muted = [c for c in cities if interactive_radial_id and c["radial_id"] != interactive_radial_id]
+
+        def _add_city_trace(group: list[dict], *, muted_style: bool) -> None:
+            if not group:
+                return
+            lats = [float(c["lat"]) for c in group]
+            lons = [float(c["lon"]) for c in group]
+            labels = [str(c["label"]) for c in group]
+            rids = [str(c["radial_id"]) for c in group]
+            counts = [int(c.get("n_cnv", 0)) for c in group]
+            sizes = [22 + min(n, 400) // 30 for n in counts] if muted_style else [28 + min(n, 400) // 25 for n in counts]
+            if muted_style:
+                colors = ["#94a3b8"] * len(group)
+                text_colors = ["#94a3b8"] * len(group)
+                hover = [
+                    f"<b>{lbl}</b><br>Referencia (demo activa en otra localidad)"
+                    for lbl in labels
+                ]
+                custom = np.array([[""] for _ in group])
+            else:
+                colors = ["#00BFFF" if rid == selected_radial_id else "#2b6cb0" for rid in rids]
+                text_colors = ["#1e3a5f"] * len(group)
+                hover = [f"<b>{lbl}</b><br>{n:,} perfiles .cnv con coordenadas" for lbl, n in zip(labels, counts)]
+                custom = np.array(rids).reshape(-1, 1)
+            fig.add_trace(
+                go.Scattermap(
+                    lat=lats,
+                    lon=lons,
+                    mode="markers+text",
+                    text=labels,
+                    textposition="top center",
+                    textfont=dict(size=10 if muted_style else 11, color=text_colors[0], family="Arial, sans-serif"),
+                    marker=dict(size=sizes, color=colors, opacity=0.45 if muted_style else 0.92),
+                    customdata=custom,
+                    hovertext=hover,
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    showlegend=False,
+                )
             )
-        )
+
+        _add_city_trace(muted, muted_style=True)
+        _add_city_trace(active, muted_style=False)
 
     fig.update_layout(
         map=dict(

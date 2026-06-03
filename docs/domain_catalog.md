@@ -37,7 +37,7 @@ Franjas orientativas (lon W): Coruña (NW), Cudillero (≤6.0°W), Gijón (6.0�
 
 Auditoría: `python run/audit_cnv_radials.py` → `outputs/temporal/cnv_radial_audit.csv`.
 
-El pipeline Cudillero **omite** el resto antes de la puerta de cuarentena. Prueba: `IEO_ALL_RADIALS=1`.
+Por defecto **todas** las radiales clasificables pasan por el mismo control previo (`ingest_gate`) y el resto del pipeline. Para acotar una radial: `IEO_PIPELINE_RADIAL=gijon` (o `IEO_ONLY_CUDILLERO=1` para Cudillero). Una vez generado `outputs/runs/`, el visor puede **filtrar** esos Parquets por cualquier `radial_id` conocido (`filter_dataframe_to_radial`); la UX de reunión prioriza solo **gijon**.
 
 ---
 

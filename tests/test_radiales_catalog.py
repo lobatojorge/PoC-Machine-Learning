@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from ieo.radiales_catalog import (
     RADIAL_ID_CUDILLERO,
+    RADIAL_ID_GIJON,
     RADIAL_ID_SANTANDER,
     attach_radial_id,
     filter_dataframe_to_radial,
@@ -36,3 +39,30 @@ def test_filter_dataframe_to_radial() -> None:
     assert len(out) == 1
     assert dropped == 1
     assert out.iloc[0]["estacion"] == 1
+
+
+def test_attach_radial_id_backfill_from_source_file(tmp_path: Path) -> None:
+    cnv = tmp_path / "cnv"
+    (cnv / "2001").mkdir(parents=True)
+    p = cnv / "2001" / "gjul101.cnv"
+    p.write_text(
+        "\n".join(
+            [
+                "* Sea-Bird",
+                "# name 0 = t068: T",
+                "# start_time = Jul 10 2001 10:00:00",
+                "*END*",
+                "1 12.0",
+            ]
+        ),
+        encoding="latin-1",
+    )
+    df = pd.DataFrame(
+        {
+            "source_file": ["gjul101.cnv", "ene401.cnv"],
+            "radial_id": [pd.NA, pd.NA],
+            "estacion": [1, 1],
+        }
+    )
+    out = attach_radial_id(df, cnv_root=cnv)
+    assert out.loc[0, "radial_id"] == RADIAL_ID_GIJON

@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ieo.validation.radial_contract import filter_sampling_dates_pandas
+
 
 def monthly_value_at_depth(
     df: pd.DataFrame,
@@ -16,13 +18,15 @@ def monthly_value_at_depth(
     target_depth_m: float = 5.0,
 ) -> tuple[pd.DataFrame, dict[str, float | int]]:
     """
-    Interpola ``col_value`` a ``target_depth_m`` por lance y agrega media mensual por estación.
+    Interpola ``col_value`` a ``target_depth_m`` por lance y, si hay varios en el mismo mes,
+    conserva el lance con mayor profundidad máxima del perfil (roseta repetida).
 
     Returns:
         DataFrame con columnas ``estacion``, ``fecha``, ``valor_prof`` y diagnóstico de lances.
     """
     use_cols = [col_fecha, col_prof, col_value, col_estacion] + (["acronimo"] if "acronimo" in df.columns else [])
     work = df[use_cols].copy()
+    work, _ = filter_sampling_dates_pandas(work, col_fecha=col_fecha)
     work[col_fecha] = pd.to_datetime(work[col_fecha], errors="coerce")
     work[col_prof] = pd.to_numeric(work[col_prof], errors="coerce")
     work[col_value] = pd.to_numeric(work[col_value], errors="coerce")
@@ -65,19 +69,24 @@ def monthly_value_at_depth(
             return float("nan")
         return float(np.interp(target_depth_m, z, v))
 
-    per_cast = (
-        work.groupby(group_keys, as_index=False)
-        .apply(
-            lambda g: pd.Series(
-                {
-                    "fecha": pd.to_datetime(g[col_fecha].iloc[0]).to_period("M").to_timestamp(how="start"),
-                    "valor_prof": _interp_value(g),
-                }
-            ),
-            include_groups=False,
+    def _row_per_cast(g: pd.DataFrame) -> pd.Series:
+        name = g.name
+        if isinstance(name, tuple):
+            est_val = name[-1]
+        elif col_estacion in g.columns:
+            est_val = g[col_estacion].iloc[0]
+        else:
+            est_val = name
+        return pd.Series(
+            {
+                col_estacion: est_val,
+                "fecha": pd.to_datetime(g[col_fecha].iloc[0]).to_period("M").to_timestamp(how="start"),
+                "valor_prof": _interp_value(g),
+                "z_max": float(g[col_prof].max()),
+            }
         )
-        .reset_index(drop=True)
-    )
+
+    per_cast = work.groupby(group_keys).apply(_row_per_cast, include_groups=False).reset_index(drop=True)
     n_casts = int(len(per_cast))
     n_valid = int(per_cast["valor_prof"].notna().sum())
     diag: dict[str, float | int] = {
@@ -91,6 +100,10 @@ def monthly_value_at_depth(
     if per_cast.empty:
         return pd.DataFrame(), diag
 
-    agg = per_cast.groupby([col_estacion, "fecha"], as_index=False)["valor_prof"].mean()
-    agg = agg.loc[:, [col_estacion, "fecha", "valor_prof"]]
+    agg = (
+        per_cast.sort_values("z_max", ascending=False)
+        .groupby([col_estacion, "fecha"], as_index=False)
+        .first()
+        .loc[:, [col_estacion, "fecha", "valor_prof"]]
+    )
     return agg.sort_values([col_estacion, "fecha"]).reset_index(drop=True), diag

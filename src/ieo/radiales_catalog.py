@@ -6,6 +6,7 @@ Uso temprano en ingesta o en el visor para no mezclar radiales en un mismo produ
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
 
 import pandas as pd
@@ -57,30 +58,78 @@ def identify_radial(text: str | None) -> str | None:
     return None
 
 
-def attach_radial_id(df: pd.DataFrame, *, hint_columns: tuple[str, ...] = ("acronimo", "cast")) -> pd.DataFrame:
-    """Añade columna ``radial_id`` si no existe, usando la primera columna de pista disponible."""
-    if "radial_id" in df.columns:
-        return df
+def attach_radial_id(
+    df: pd.DataFrame,
+    *,
+    hint_columns: tuple[str, ...] = ("acronimo", "cast"),
+    cnv_root: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Añade o rellena ``radial_id`` desde acrónimo/cast, ``source_file`` o nombre de fichero.
+
+    Si la columna existe pero está vacía (p. ej. Parquet antiguo con ``cast`` = stem sin E1GI),
+    se vuelve a inferir.
+    """
+    from ieo.io.cnv_radial import classify_cnv_radial, radial_id_from_source_reference  # noqa: PLC0415
+
     out = df.copy()
+    needs_fill = "radial_id" not in out.columns or not out["radial_id"].notna().any()
+    if not needs_fill:
+        return out
+
+    if "source_file" in out.columns:
+        by_leaf: dict[str, Path] = {}
+        if cnv_root is not None and cnv_root.is_dir():
+            for p in cnv_root.rglob("*.cnv"):
+                by_leaf.setdefault(p.name.lower(), p)
+
+        cache: dict[str, str | None] = {}
+
+        def _rid_for_ref(ref: object) -> str | None:
+            if ref is None or (isinstance(ref, float) and pd.isna(ref)):
+                return None
+            key = str(ref).strip()
+            if not key:
+                return None
+            if key not in cache:
+                leaf = Path(key).name.lower()
+                hit = by_leaf.get(leaf)
+                if hit is not None:
+                    cache[key] = classify_cnv_radial(hit)
+                else:
+                    cache[key] = radial_id_from_source_reference(key, cnv_root=None)
+            return cache[key]
+
+        out["radial_id"] = out["source_file"].map(_rid_for_ref)
+        if out["radial_id"].notna().any():
+            return out
+
     for col in hint_columns:
         if col in out.columns:
             out["radial_id"] = out[col].map(lambda v: identify_radial(None if pd.isna(v) else str(v)))
-            return out
+            if out["radial_id"].notna().any():
+                return out
+
     out["radial_id"] = pd.NA
     return out
 
 
-def filter_dataframe_to_radial(df: pd.DataFrame, radial_id: str) -> tuple[pd.DataFrame, int]:
+def filter_dataframe_to_radial(
+    df: pd.DataFrame,
+    radial_id: str,
+    *,
+    cnv_root: Path | None = None,
+) -> tuple[pd.DataFrame, int]:
     """
     Filtra filas a una radial; devuelve (dataframe, filas descartadas).
 
     CSV legacy Cudillero: ``estacion`` 1–3 ↔ E1CU/E2CU/E3CU.
 
-    Ficheros SeaBird ``.cnv`` (pipeline actual): la ingesta ya es solo Cudillero y
-    ``** Station:`` suele ser 4–8, no 1–3. Si no hay ``radial_id`` inferible y ninguna
-    fila cae en 1–3, se conservan todas las filas del Parquet (ya filtrado en paso 00a).
+    Ficheros SeaBird ``.cnv`` (pipeline multi-radial): si hay ``radial_id`` en columnas,
+    se filtra a la radial seleccionada en el visor. Si no hay ``radial_id`` y la radial
+    pedida es Cudillero, se conservan todas las filas (compatibilidad con series sin acrónimo).
     """
-    work = attach_radial_id(df)
+    work = attach_radial_id(df, cnv_root=cnv_root)
     before = len(work)
     if work["radial_id"].notna().any():
         out = work[work["radial_id"] == radial_id].copy()

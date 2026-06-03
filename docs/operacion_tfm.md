@@ -11,10 +11,12 @@ No se afirma equivalencia con producto industrial: sin SLA, sin multi-tenant, si
 ## Orden de ejecución
 
 1. Colocar ficheros SeaBird en `data/cnv/` (subcarpetas por año admitidas; ver `README.md`).
-2. `python run/main.py` — ingesta solo `.cnv` (radial Cudillero por defecto) y genera Parquet bajo `outputs/runs/<run_id>/`.
-3. `streamlit run run/app.py` — el visor carga `perfiles_all.ctd_clean.parquet` (y anomalías) de la última corrida válida.
+2. `python run/main.py` — por defecto **modo incremental** (solo `.cnv` nuevos o modificados; caché en `outputs/artifact_cache/`). Cadena: control previo → Parquet → contrato → Isolation Forest (`contamination=0.05`) → `perfiles_all.ctd_clean.parquet` bajo `outputs/runs/<run_id>/`. Alcance opcional: `IEO_PIPELINE_RADIAL=...`. Rebuild total: `IEO_FULL_REBUILD=1`.
+3. `streamlit run run/app.py` — visor hub radiales (comando indicado al final de la consola del pipeline).
 
-El visor **no** lee `.cnv` ni CSV: solo Parquet producidos por el pipeline.
+La consola del pipeline está organizada en cinco bloques: datos de entrada, pasos, progreso (barras), resultados (incluido **total de anomalías al 100 %** del paso 02 y rutas de revisión), e indicación de Streamlit.
+
+El visor **no** sustituye al informe de ejecución: `checkpoints/`, `run_summary.json` y `outputs/RESUMEN_ULTIMA.html` siguen siendo la auditoría detallada.
 
 ## Docker (opcional)
 
@@ -43,6 +45,14 @@ pytest
 ```
 
 Las pruebas cubren utilidades puras en `run/pipeline_runs.py` (listado de corridas, carga Parquet, token de frescura, provenance).
+
+## Limitaciones (resumen)
+
+Clasificación completa para reuniones: [`posicionamiento_trl.md`](posicionamiento_trl.md) (financiación / metodología / carga TFM).
+
+- **Financiación / institución:** sin despliegue IEO, login, embargos ni orquestación programada.
+- **Metodología:** Marcos + iid, holdout 1 mes, IF + contrato físico; visor no certifica para publicación.
+- **Alcance TFM:** operación manual, demo pulida en Gijón, tests sin archivo `.cnv` completo en CI.
 
 ## Fuera de alcance / trabajo futuro
 

@@ -13,8 +13,10 @@ Orden de precedencia (producto radial):
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ieo.radiales_catalog import (
     RADIAL_ID_CORUNA,
@@ -26,8 +28,11 @@ from ieo.radiales_catalog import (
 )
 
 CNV_CRUISE_LINE_RE = re.compile(r"^\*+\s*Cruise:\s*(.*)\s*$", re.IGNORECASE)
-CNV_LAT_LINE_RE = re.compile(r"^\*+\s*Latitude:\s*(.*)\s*$", re.IGNORECASE)
-CNV_LON_LINE_RE = re.compile(r"^\*+\s*Longitude:\s*(.*)\s*$", re.IGNORECASE)
+CNV_LAT_LINE_RE = re.compile(r"^\*{2,}\s*Latitude:\s*(.*)\s*$", re.IGNORECASE)
+CNV_LON_LINE_RE = re.compile(r"^\*{2,}\s*Longitude:\s*(.*)\s*$", re.IGNORECASE)
+CNV_NMEA_LAT_RE = re.compile(r"^\*\s*NMEA Latitude\s*=\s*(.*)\s*$", re.IGNORECASE)
+CNV_NMEA_LON_RE = re.compile(r"^\*\s*NMEA Longitude\s*=\s*(.*)\s*$", re.IGNORECASE)
+CNV_STATION_FIELD_RE = re.compile(r"^\*{2,}\s*Station:\s*(.*)\s*$", re.IGNORECASE)
 
 _MONTH_PREFIX_RE = re.compile(
     r"^(?P<prefix>[a-z]{0,2})"
@@ -40,9 +45,15 @@ _PREFIX_TO_RADIAL: dict[str, str] = {
     "s": RADIAL_ID_SANTANDER,
 }
 
+# Topónimos asturianos / variantes en ``** Cruise:`` (clave = texto normalizado).
+LOCALITY_ALIASES_ASTURIAN: dict[str, str] = {
+    "cuideiru": RADIAL_ID_CUDILLERO,
+    "xixon": RADIAL_ID_GIJON,
+}
+
 _CRUISE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (RADIAL_ID_CUDILLERO, ("cudillero", "radial cud", "rad. cud")),
-    (RADIAL_ID_GIJON, ("gijon", "gijón", "gij\x95n", "radial gij", "radial de gij", "jureva")),
+    (RADIAL_ID_CUDILLERO, ("cudillero", "cuideiru", "radial cud", "rad. cud")),
+    (RADIAL_ID_GIJON, ("gijon", "gijón", "gij\x95n", "xixon", "radial gij", "radial de gij", "jureva")),
     (RADIAL_ID_SANTANDER, ("santander", "santand", "sanatnder", "sanatander", "rad san", "radsan")),
     (RADIAL_ID_VIGO, ("vigo", "radial vi", "rad vi")),
     (RADIAL_ID_CORUNA, ("coru", "coruña", "coruna", "la coru", "a coru")),
@@ -66,6 +77,7 @@ class CnvRadialHints:
     longitude: str = ""
     lat_deg: float | None = None
     lon_deg: float | None = None
+    station_field: str = ""  # raw value of ** Station:
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +95,7 @@ def _parse_lat_lon_deg(lat_str: str, lon_str: str) -> tuple[float | None, float 
         s = s.strip().upper()
         if not s:
             return None
+        s = re.sub(r"[^0-9A-Z\s\.\-+]", " ", s)
         parts = s.replace("N", "").replace("S", "").split()
         try:
             nums = [float(p) for p in parts[:3]]
@@ -101,6 +114,7 @@ def _parse_lat_lon_deg(lat_str: str, lon_str: str) -> tuple[float | None, float 
         s = s.strip().upper()
         if not s:
             return None
+        s = re.sub(r"[^0-9A-Z\s\.\-+]", " ", s)
         parts = s.replace("E", "").replace("W", "").split()
         try:
             nums = [float(p) for p in parts[:3]]
@@ -113,15 +127,15 @@ def _parse_lat_lon_deg(lat_str: str, lon_str: str) -> tuple[float | None, float 
             deg += nums[2] / 3600.0
         if "W" in s:
             deg = -deg
-        elif "E" not in s and 0 < deg < 20:
-            deg = -deg
         return deg
 
     return lat_to_deg(lat_str), lon_to_deg(lon_str)
 
 
+
 def read_cnv_radial_hints(source: Path, *, max_header_lines: int = 200) -> CnvRadialHints:
-    cruise = latitude = longitude = ""
+    cruise = latitude = longitude = station_field = ""
+    nmea_lat = nmea_lon = ""
     try:
         with source.open(encoding="latin-1", errors="replace") as fh:
             for i, line in enumerate(fh):
@@ -139,16 +153,49 @@ def read_cnv_radial_hints(source: Path, *, max_header_lines: int = 200) -> CnvRa
                 m = CNV_LON_LINE_RE.match(st)
                 if m:
                     longitude = m.group(1).strip()
+                m = CNV_NMEA_LAT_RE.match(st)
+                if m:
+                    nmea_lat = m.group(1).strip()
+                m = CNV_NMEA_LON_RE.match(st)
+                if m:
+                    nmea_lon = m.group(1).strip()
+                m = CNV_STATION_FIELD_RE.match(st)
+                if m:
+                    station_field = m.group(1).strip()
     except OSError:
         pass
-    lat_d, lon_d = _parse_lat_lon_deg(latitude, longitude)
+    # Use ** Latitude/Longitude when available; fall back to * NMEA Latitude/Longitude
+    eff_lat = latitude if latitude else nmea_lat
+    eff_lon = longitude if longitude else nmea_lon
+    lat_d, lon_d = _parse_lat_lon_deg(eff_lat, eff_lon)
     return CnvRadialHints(
         cruise=cruise,
-        latitude=latitude,
-        longitude=longitude,
+        latitude=eff_lat,
+        longitude=eff_lon,
         lat_deg=lat_d,
         lon_deg=lon_d,
+        station_field=station_field,
     )
+
+
+def normalize_cruise_text(cruise: str) -> str:
+    """Minúsculas, sin acentos, espacios colapsados (para alias asturiano y keywords)."""
+    if not cruise:
+        return ""
+    s = unicodedata.normalize("NFKD", str(cruise))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    return " ".join(s.split())
+
+
+def _radial_from_asturian_aliases(cruise: str) -> str | None:
+    norm = normalize_cruise_text(cruise)
+    if not norm:
+        return None
+    for alias, radial_id in LOCALITY_ALIASES_ASTURIAN.items():
+        if alias in norm:
+            return radial_id
+    return None
 
 
 def is_rcan_campaign(cruise: str) -> bool:
@@ -163,12 +210,18 @@ def is_rcan_campaign(cruise: str) -> bool:
 
 
 def classify_radial_by_position(lat_deg: float | None, lon_deg: float | None) -> str | None:
-    """Franjas lon/lat sin solape (Cantábrico)."""
+    """
+    Franjas lon/lat Cantábrico sin solapes graves.
+
+    A Coruña **no** usa la regla antigua ``lat >= 43.85 y lon <= -5`` (etiquetaba mar al norte
+    de Gijón como Coruña). Galicia occidental: ``lon <= -7`` con latitudes típicas de la
+    costa/plataforma gallega; se evalúa **antes** que la franja ``lon <= -6`` de Cudillero.
+    """
     if lat_deg is None or lon_deg is None:
         return None
     if lat_deg < 43.15 or lat_deg > 44.7 or lon_deg > -2.5 or lon_deg < -9.5:
         return None
-    if lat_deg >= 43.85 and lon_deg <= -5.0:
+    if lon_deg <= -7.5 and 43.05 <= lat_deg <= 44.35:
         return RADIAL_ID_CORUNA
     if lon_deg <= -6.0:
         return RADIAL_ID_CUDILLERO
@@ -180,7 +233,10 @@ def classify_radial_by_position(lat_deg: float | None, lon_deg: float | None) ->
 def _radial_from_cruise_explicit(cruise: str) -> str | None:
     if not cruise:
         return None
-    c = cruise.lower()
+    ast = _radial_from_asturian_aliases(cruise)
+    if ast is not None:
+        return ast
+    c = normalize_cruise_text(cruise)
     for radial_id, keywords in _CRUISE_KEYWORDS:
         if any(k in c for k in keywords):
             return radial_id
@@ -226,13 +282,68 @@ def _in_cudillero_bbox(hints: CnvRadialHints) -> bool:
     )
 
 
+def _is_stn_cudillero_folder(source: Path) -> bool:
+    """True si el fichero está en una carpeta 'St.N CNVs' (estaciones históricas de Cudillero)."""
+    return bool(re.search(r'[Ss]t\.\d+\s+CNVs?', source.parent.name))
+
+
+def _radial_from_station_prefix(hints: CnvRadialHints) -> str | None:
+    """Deduce radial from ** Station: prefix for RCAN/Radiales campaigns.
+
+    Conventions observed in the field:
+      C1, C2, C3  → Cudillero
+      G1, G2, ...  → Gijón
+      S1, S2, ...  → Santander
+    Only applied when cruise matches _RCAN_CAMPAIGN_RE to avoid mis-classifying
+    historical files that happen to have a one-letter station code.
+    """
+    if not is_rcan_campaign(hints.cruise):
+        return None
+    stn = hints.station_field.strip().upper()
+    if not stn:
+        return None
+    if stn.startswith("CO"):
+        return RADIAL_ID_CORUNA
+    if stn.startswith("C"):
+        return RADIAL_ID_CUDILLERO
+    if stn.startswith("G"):
+        return RADIAL_ID_GIJON
+    if stn.startswith("S"):
+        return RADIAL_ID_SANTANDER
+    if stn.startswith("V"):
+        return RADIAL_ID_VIGO
+    return None
+
+
 def classify_cnv_radial_detailed(source: Path) -> CnvRadialClassification:
     hints = read_cnv_radial_hints(source)
     campana = is_rcan_campaign(hints.cruise)
     geo = classify_radial_by_position(hints.lat_deg, hints.lon_deg)
     cruise_rid = _radial_from_cruise_explicit(hints.cruise)
     file_rid = _radial_from_filename(source.name)
+    station_rid = _radial_from_station_prefix(hints)
     conflict = bool(geo and cruise_rid and geo != cruise_rid)
+
+
+    # Máxima precedencia: carpeta 'St.N CNVs' → siempre Cudillero
+    # (ficheros históricos 1993–2003 de las tres estaciones de Cudillero,
+    # aunque el campo cruise contenga texto ambiguo como "Radial Gij cudi")
+    if _is_stn_cudillero_folder(source):
+        if geo and geo != RADIAL_ID_CUDILLERO:
+            import warnings
+            warnings.warn(
+                f"[cnv_radial] stn_cudillero_folder anula clasificación geo={geo!r} "
+                f"para {source.name!r}. Verificar que el fichero pertenece a Cudillero.",
+                stacklevel=2,
+            )
+        return CnvRadialClassification(
+            radial_id=RADIAL_ID_CUDILLERO,
+            rule="stn_cudillero_folder",
+            campana_rcan=False,
+            cruise_radial=cruise_rid,
+            geo_radial=geo,
+            conflict_cruise_vs_geo=False,
+        )
 
     if not hints.cruise.strip():
         if file_rid:
@@ -281,7 +392,11 @@ def classify_cnv_radial_detailed(source: Path) -> CnvRadialClassification:
             geo_radial=geo,
             conflict_cruise_vs_geo=False,
         )
-    if not hints.cruise.strip() and _in_cudillero_bbox(hints):
+    # Fallback bbox Cudillero: solo se activa cuando classify_radial_by_position devuelve None
+    # (coordenadas fuera del Cantábrico conocido) o Cudillero. No se activa si la geo
+    # ya resolvió Santander, Gijón, etc., para evitar capturar ficheros de otras radiales.
+    geo_compatible = geo is None or geo == RADIAL_ID_CUDILLERO
+    if not hints.cruise.strip() and geo_compatible and _in_cudillero_bbox(hints):
         name = source.name.lower()
         if not name.startswith(("g", "s", "rcan")):
             return CnvRadialClassification(
@@ -293,6 +408,17 @@ def classify_cnv_radial_detailed(source: Path) -> CnvRadialClassification:
                 conflict_cruise_vs_geo=False,
             )
 
+    # Fallback: ** Station: prefix for RCAN campaigns (C/G/S → cudillero/gijon/santander)
+    if station_rid:
+        return CnvRadialClassification(
+            radial_id=station_rid,
+            rule="rcan_station_prefix",
+            campana_rcan=campana,
+            cruise_radial=cruise_rid,
+            geo_radial=geo,
+            conflict_cruise_vs_geo=conflict,
+        )
+
     return CnvRadialClassification(
         radial_id=None,
         rule="unknown",
@@ -303,8 +429,32 @@ def classify_cnv_radial_detailed(source: Path) -> CnvRadialClassification:
     )
 
 
+
 def classify_cnv_radial(source: Path) -> str | None:
     return classify_cnv_radial_detailed(source).radial_id
+
+
+def radial_id_from_source_reference(
+    ref: str | None,
+    *,
+    cnv_root: Path | None = None,
+) -> str | None:
+    """
+    Infiere ``radial_id`` desde ``source_file`` / nombre de fichero en un DataFrame.
+
+    Si ``cnv_root`` apunta a ``data/cnv/``, resuelve la ruta real para usar cabecera SBE (geo/cruise).
+    """
+    if ref is None:
+        return None
+    name = str(ref).strip()
+    if not name:
+        return None
+    leaf = Path(name).name
+    if cnv_root is not None and cnv_root.is_dir():
+        hits = sorted(cnv_root.rglob(leaf))
+        if hits:
+            return classify_cnv_radial(hits[0])
+    return classify_cnv_radial(Path(leaf))
 
 
 def is_cudillero_cnv(source: Path) -> bool:
@@ -314,9 +464,11 @@ def is_cudillero_cnv(source: Path) -> bool:
 def filter_paths_by_radial(
     candidates: list[Path],
     target_radial: str,
-) -> tuple[list[Path], list[dict[str, str]], dict[str, int]]:
+    *,
+    cnv_root: Path | None = None,
+) -> tuple[list[Path], list[dict[str, Any]], dict[str, int]]:
     kept: list[Path] = []
-    skipped_sample: list[dict[str, str]] = []
+    skipped_sample: list[dict[str, Any]] = []
     by_radial: dict[str, int] = {}
 
     for path in candidates:
@@ -326,22 +478,37 @@ def filter_paths_by_radial(
             continue
         label = rid or "desconocida"
         by_radial[label] = by_radial.get(label, 0) + 1
-        if len(skipped_sample) < 30:
-            skipped_sample.append(
-                {
-                    "file": path.name,
-                    "radial": label,
-                    "reason": radial_skip_reason(path, target_radial),
-                }
-            )
+        entry: dict[str, Any] = {
+            "file": path.name,
+            "radial": label,
+            "reason": radial_skip_reason(path, target_radial),
+        }
+        if cnv_root is not None:
+            try:
+                entry["rel"] = path.resolve().relative_to(cnv_root.resolve()).as_posix()
+            except ValueError:
+                entry["rel"] = path.name
+        if rid is None:
+            hints = read_cnv_radial_hints(path)
+            cr = (hints.cruise or "").strip()
+            if cr:
+                entry["cruise_hint"] = cr[:120]
+            stn = (hints.station_field or "").strip()
+            if stn:
+                entry["station_hint"] = stn
+        skipped_sample.append(entry)
+
 
     return kept, skipped_sample, by_radial
 
 
+
 def filter_paths_to_cudillero(
     candidates: list[Path],
-) -> tuple[list[Path], list[dict[str, str]], dict[str, int]]:
-    return filter_paths_by_radial(candidates, RADIAL_ID_CUDILLERO)
+    *,
+    cnv_root: Path | None = None,
+) -> tuple[list[Path], list[dict[str, Any]], dict[str, int]]:
+    return filter_paths_by_radial(candidates, RADIAL_ID_CUDILLERO, cnv_root=cnv_root)
 
 
 def radial_skip_reason(source: Path, target_radial: str) -> str:
@@ -354,7 +521,8 @@ def radial_skip_reason(source: Path, target_radial: str) -> str:
         extra = " campaña RCAN/Cantábrico." if det.campana_rcan else ""
         return (
             f"Radial no identificada (Cruise: {cruise[:60]}; nombre: {source.name}).{extra} "
-            f"Solo se procesa {target_radial}."
+            f"Con alcance de pipeline (`IEO_PIPELINE_RADIAL` / legacy `IEO_ONLY_CUDILLERO`) "
+            f"solo se procesa la radial {target_radial}."
         )
     return ""
 

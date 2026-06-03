@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from ieo.cudillero_paths import default_radial_csv_path  # reexport API estable
+from ieo.paths import default_radial_csv_path  # reexport API estable
 from ieo.io.base import ReadResult
 from ieo.radiales_catalog import identify_radial
 

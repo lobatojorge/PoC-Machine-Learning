@@ -22,7 +22,8 @@ Integración
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -76,14 +77,151 @@ class RadialContractThresholds:
     drift_window_years: int = 3
     temp_window_mean_diff_warn_c: float = 0.8
 
-    # Salinidad (PSU) — comprobaciones ligeras si kind=salinity
+    # Muestreo / calendario (``fecha`` canónica; años plausibles CTD histórico IEO)
+    sampling_year_min: int = 1970
+    sampling_year_max: int = 2035
+
+    # Salinidad (PSU)
     sal_abs_min: float = 0.0
     sal_abs_max: float = 42.0
     sal_month_delta_warn_psu: float = 2.5
     sal_month_delta_error_psu: float = 5.0
+    # Gradiente vertical salinidad (PSU/m) — mismas bandas de Δz que temperatura
+    sal_adjacent_delta_warn_band_b_psu: float = 3.0   # Δz 2.5–5 m → aviso
+    sal_adjacent_delta_error_band_b_psu: float = 8.0  # Δz 2.5–5 m → error
+    sal_adjacent_delta_warn_band_c_psu: float = 4.0   # Δz 5–15 m → aviso
+    sal_adjacent_delta_error_band_c_psu: float = 10.0 # Δz 5–15 m → error
+
+    # Serie mensual: máxima brecha (meses) tolerable para aplicar la regla mes-a-mes
+    month_gap_max_for_consecutive_rule: int = 3
+    # Serie temporal mínima (años) para calcular tendencia interanual
+    min_years_for_trend: int = 5
 
 
 DEFAULT_THRESHOLDS = RadialContractThresholds()
+
+
+def default_thresholds_from_env() -> RadialContractThresholds:
+    """Umbrales por defecto con posibles overrides ``IEO_SAMPLING_YEAR_MIN`` / ``IEO_SAMPLING_YEAR_MAX``."""
+    base = RadialContractThresholds()
+    raw_min = os.environ.get("IEO_SAMPLING_YEAR_MIN", "").strip()
+    raw_max = os.environ.get("IEO_SAMPLING_YEAR_MAX", "").strip()
+    kwargs: dict[str, int] = {}
+    if raw_min:
+        try:
+            kwargs["sampling_year_min"] = int(raw_min)
+        except ValueError:
+            pass
+    if raw_max:
+        try:
+            kwargs["sampling_year_max"] = int(raw_max)
+        except ValueError:
+            pass
+    y0 = kwargs.get("sampling_year_min", base.sampling_year_min)
+    y1 = kwargs.get("sampling_year_max", base.sampling_year_max)
+    if y0 > y1:
+        return base
+    return replace(base, **kwargs) if kwargs else base
+
+
+def validate_sampling_dates_pandas(
+    df: pd.DataFrame,
+    *,
+    col_fecha: str = "fecha",
+    thresholds: RadialContractThresholds | None = None,
+) -> list[Violation]:
+    """
+    Comprueba que ``fecha`` sea parseable y que el año calendario esté en rango operativo.
+
+    Evita errores groseros de metadatos (p. ej. año 2080) que estiran el eje temporal del visor.
+    """
+    th = thresholds or default_thresholds_from_env()
+    out: list[Violation] = []
+    if col_fecha not in df.columns:
+        return out
+
+    ts = pd.to_datetime(df[col_fecha], errors="coerce", utc=False)
+    n = int(len(ts))
+    if n == 0:
+        return out
+
+    n_nat = int(ts.isna().sum())
+    if n_nat == n:
+        out.append(
+            Violation(
+                ViolationSeverity.ERROR,
+                "sampling_date_unparseable",
+                f"Todas las {n} filas tienen ``{col_fecha}`` no parseable como fecha.",
+                {"column": col_fecha, "n_rows": n},
+            )
+        )
+        return sorted(out, key=_violations_sort_key)
+
+    if n_nat > 0:
+        out.append(
+            Violation(
+                ViolationSeverity.WARNING,
+                "sampling_date_partially_missing",
+                f"{n_nat} de {n} filas con ``{col_fecha}`` no parseable (NaT).",
+                {"column": col_fecha, "n_nat": n_nat, "n_rows": n},
+            )
+        )
+
+    ok = ts.dropna()
+    years = ok.dt.year.astype("int64")
+    y_min = int(years.min())
+    y_max = int(years.max())
+    bad_lo = years < th.sampling_year_min
+    bad_hi = years > th.sampling_year_max
+    n_lo = int(bad_lo.sum())
+    n_hi = int(bad_hi.sum())
+    if n_lo or n_hi:
+        out.append(
+            Violation(
+                ViolationSeverity.ERROR,
+                "sampling_date_out_of_calendar_range",
+                f"``{col_fecha}`` fuera del rango de años permitido "
+                f"[{th.sampling_year_min}, {th.sampling_year_max}]: "
+                f"{n_lo} fila(s) antes de {th.sampling_year_min}, {n_hi} fila(s) después de {th.sampling_year_max}. "
+                f"Rango observado en datos válidos: {y_min}–{y_max}.",
+                {
+                    "column": col_fecha,
+                    "year_min_seen": y_min,
+                    "year_max_seen": y_max,
+                    "n_below": n_lo,
+                    "n_above": n_hi,
+                    "allowed_min": th.sampling_year_min,
+                    "allowed_max": th.sampling_year_max,
+                },
+            )
+        )
+
+    return sorted(out, key=_violations_sort_key)
+
+
+def filter_sampling_dates_pandas(
+    df: pd.DataFrame,
+    *,
+    col_fecha: str = "fecha",
+    thresholds: RadialContractThresholds | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """
+    Elimina filas cuyo año en ``col_fecha`` quede fuera del rango operativo.
+
+    El visor y la agregación mensual deben usar datos ya depurados; la validación sola
+    no basta si el gráfico se muestra en modo diagnóstico o si el eje se calcula antes del QC.
+    """
+    th = thresholds or default_thresholds_from_env()
+    if col_fecha not in df.columns or df.empty:
+        return df, 0
+
+    ts = pd.to_datetime(df[col_fecha], errors="coerce", utc=False)
+    years = ts.dt.year
+    ok = years.notna() & (years >= th.sampling_year_min) & (years <= th.sampling_year_max)
+    n_drop = int((~ok).sum())
+    if n_drop == 0:
+        return df, 0
+    return df.loc[ok].copy(), n_drop
 
 
 def infer_variable_kind(col_name: str) -> str:
@@ -144,6 +282,9 @@ def validate_profile_dataframe(
       verticales adyacentes (detector burdo de inversión / datos corruptos). Dentro de
       cada grupo, si la profundidad «resetea» hacia arriba (varios lances concatenados),
       se parte en segmentos monótonos antes de medir el gradiente.
+    - Para ``kind='salinity'``, se aplican las mismas bandas Δz con umbrales PSU/m.
+    - Variables de ``kind='other'`` (O₂, fluorescencia, turbidez) no tienen reglas de
+      gradiente vertical por defecto; ampliar `infer_variable_kind` para añadirlas.
     """
     th = thresholds or DEFAULT_THRESHOLDS
     kind = variable_kind or infer_variable_kind(col_value)
@@ -223,9 +364,11 @@ def validate_profile_dataframe(
     max_jump_warn = 0.0
 
     for _, g in work.groupby(gcols, dropna=False):
-        gg = g.sort_values(col_prof)
-        z = gg[col_prof].to_numpy(dtype=float)
-        v = gg[col_value].to_numpy(dtype=float)
+        # NO ordenamos por profundidad (z) aquí para no destruir el orden cronológico
+        # de adquisición (filas originales). Si se ordenara, se intercalarían datos
+        # de múltiples lances en la misma estación, causando falsos positivos.
+        z = g[col_prof].to_numpy(dtype=float)
+        v = g[col_value].to_numpy(dtype=float)
         if len(z) < 2:
             continue
         for zs, vs in _iter_monotonic_depth_segments(z, v):
@@ -238,12 +381,20 @@ def validate_profile_dataframe(
                 ((dz >= min_dz) & (dz <= b_max), th.temp_adjacent_delta_error_band_b_c, th.temp_adjacent_delta_warn_band_b_c),
                 ((dz > b_max) & (dz <= max_dz), th.temp_adjacent_delta_error_band_c_c, th.temp_adjacent_delta_warn_band_c_c),
             )
-            if kind == "temperature":
+            if kind in ("temperature", "salinity"):
+                if kind == "temperature":
+                    bands_local = bands
+                else:
+                    # Salinidad: mismas bandas Δz, umbrales PSU/m
+                    bands_local = (
+                        ((dz >= min_dz) & (dz <= b_max), th.sal_adjacent_delta_error_band_b_psu, th.sal_adjacent_delta_warn_band_b_psu),
+                        ((dz > b_max) & (dz <= max_dz), th.sal_adjacent_delta_error_band_c_psu, th.sal_adjacent_delta_warn_band_c_psu),
+                    )
                 seg_err = False
                 seg_warn = False
                 mx_e = 0.0
                 mx_w = 0.0
-                for m, e_lim, w_lim in bands:
+                for m, e_lim, w_lim in bands_local:
                     if not np.any(m):
                         continue
                     ad = np.abs(dv[m])
@@ -260,31 +411,28 @@ def validate_profile_dataframe(
                     n_prof_warn += 1
                     max_jump_warn = max(max_jump_warn, mx_w)
 
-    if kind == "temperature":
-        if n_prof_err > 0:
-            out.append(
-                Violation(
-                    ViolationSeverity.ERROR,
-                    "temp_large_vertical_jump",
-                    f"{n_prof_err} perfil(es) con salto vertical T (Δz∈[{th.temp_adjacent_min_dz_m:g},{th.temp_adjacent_band_b_max_m:g}] m "
-                    f"≥{th.temp_adjacent_delta_error_band_b_c:g} °C, o Δz∈({th.temp_adjacent_band_b_max_m:g},{th.temp_adjacent_max_dz_m:g}] m "
-                    f"≥{th.temp_adjacent_delta_error_band_c_c:g} °C). Máximo observado {max_jump_err:.2f} °C. "
-                    "Revisar unidades, mezcla de lances o datos corruptos.",
-                    {"n_profiles": n_prof_err, "max_adjacent_delta_c": max_jump_err},
-                )
+    unit = "°C" if kind == "temperature" else "PSU"
+    if n_prof_err > 0:
+        out.append(
+            Violation(
+                ViolationSeverity.ERROR,
+                f"{kind[:4]}_large_vertical_jump",
+                f"{n_prof_err} perfil(es) con salto vertical {unit} (Δz∈[{th.temp_adjacent_min_dz_m:g},{th.temp_adjacent_band_b_max_m:g}] m). "
+                f"Máximo observado {max_jump_err:.2f} {unit}. "
+                "Revisar unidades, mezcla de lances o datos corruptos.",
+                {"n_profiles": n_prof_err, "max_adjacent_delta": max_jump_err, "unit": unit},
             )
-        elif n_prof_warn > 0:
-            out.append(
-                Violation(
-                    ViolationSeverity.WARNING,
-                    "temp_moderate_vertical_jump",
-                    f"{n_prof_warn} perfil(es) con saltos verticales moderados (máximo {max_jump_warn:.2f} °C). "
-                    f"Avisos: Δz∈[{th.temp_adjacent_min_dz_m:g},{th.temp_adjacent_band_b_max_m:g}] m ≥{th.temp_adjacent_delta_warn_band_b_c:g} °C; "
-                    f"Δz>{th.temp_adjacent_band_b_max_m:g} m ≥{th.temp_adjacent_delta_warn_band_c_c:g} °C. "
-                    "Revisar perfil o unidades.",
-                    {"n_profiles": n_prof_warn, "max_adjacent_delta_c": max_jump_warn},
-                )
+        )
+    elif n_prof_warn > 0:
+        out.append(
+            Violation(
+                ViolationSeverity.WARNING,
+                f"{kind[:4]}_moderate_vertical_jump",
+                f"{n_prof_warn} perfil(es) con saltos verticales moderados (máximo {max_jump_warn:.2f} {unit}). "
+                "Revisar perfil o unidades.",
+                {"n_profiles": n_prof_warn, "max_adjacent_delta": max_jump_warn, "unit": unit},
             )
+        )
 
     return sorted(out, key=_violations_sort_key)
 
@@ -337,8 +485,20 @@ def validate_monthly_radial_series(
         if len(sub) < 2:
             continue
         v = sub[col_val].to_numpy(dtype=float)
-        d = np.abs(np.diff(v))
-        max_d = float(np.max(d)) if len(d) else 0.0
+        # Solo aplicar la regla mes-a-mes entre filas realmente consecutivas en el tiempo.
+        # Si hay una laguna de más de `month_gap_max_for_consecutive_rule` meses, se omite
+        # ese par (evita falso positivo al saltar de enero a octubre).
+        dates = sub[col_fecha].to_numpy()
+        month_gaps = np.array([
+            (pd.Timestamp(dates[i + 1]) - pd.Timestamp(dates[i])).days / 30.4
+            for i in range(len(dates) - 1)
+        ])
+        gap_ok = month_gaps <= th.month_gap_max_for_consecutive_rule
+        diff_all = np.abs(np.diff(v))
+        # Solo considerar pares consecutivos con laguna aceptable
+        d_filtered = diff_all[gap_ok]
+        d = d_filtered if len(d_filtered) > 0 else np.array([])
+        max_d = float(np.max(d)) if len(d) > 0 else 0.0
         if kind == "temperature":
             if max_d >= errm:
                 out.append(
@@ -389,7 +549,19 @@ def validate_monthly_radial_series(
             yearly_med = sub_y.groupby("_y", as_index=True)[col_val].median().sort_index()
             years_arr = yearly_med.index.to_numpy(dtype=int)
             meds_arr = yearly_med.to_numpy(dtype=float)
-            if len(years_arr) >= 5:
+            if len(years_arr) < th.min_years_for_trend:
+                # Serie demasiado corta para calcular tendencia fiable
+                out.append(
+                    Violation(
+                        ViolationSeverity.WARNING,
+                        "series_too_short_for_trend",
+                        f"Estación {int(est)}: solo {len(years_arr)} año(s) de datos "
+                        f"(mínimo {th.min_years_for_trend} para tendencia interanual). "
+                        "Revisar calibración si la serie es reciente.",
+                        {"estacion": int(est), "n_years": int(len(years_arr)), "min_required": th.min_years_for_trend},
+                    )
+                )
+            if len(years_arr) >= th.min_years_for_trend:
                 slope, _intercept = np.polyfit(years_arr.astype(float), meds_arr, 1)
                 slope_f = float(slope)
                 lim_w = th.temp_annual_median_slope_warn_per_year
@@ -446,6 +618,7 @@ def validate_canonical_ctd_polars(
     thresholds: RadialContractThresholds | None = None,
 ) -> list[Violation]:
     """Wrapper sobre Parquet canónico (`fecha`, `estacion`, `profundidad_m`, `temperatura_c`, …)."""
+    th = thresholds or default_thresholds_from_env()
     if pl is None:
         return [
             Violation(
@@ -486,15 +659,20 @@ def validate_canonical_ctd_polars(
     else:
         ck = (col_estacion,)
 
-    return validate_profile_dataframe(
+    out = validate_profile_dataframe(
         pdf,
         col_prof=col_prof,
         col_value=col_val,
         col_estacion=col_estacion,
         cast_keys=ck,
-        thresholds=thresholds,
+        thresholds=th,
         variable_kind="temperature",
     )
+    if col_fecha in pdf.columns:
+        out = list(out)
+        out.extend(validate_sampling_dates_pandas(pdf, col_fecha=col_fecha, thresholds=th))
+        out.sort(key=_violations_sort_key)
+    return out
 
 
 def format_violations_markdown(violations: list[Violation]) -> str:
@@ -510,6 +688,42 @@ def format_contract_warning_postchart(v: Violation) -> str:
     Texto breve para avisos WARNING tras la gráfica (evita interpretarlos como fallo de datos).
     """
     d = v.details or {}
+    
+    # Mapeo de códigos a títulos limpios e iconos
+    _MAP = {
+        # Series mensuales
+        "temp_month_to_month_jump": ("📈", "Salto térmico mensual elevado"),
+        "temp_month_to_month_spike": ("🚨", "Salto térmico mensual crítico"),
+        "sal_month_to_month_jump": ("📈", "Salto de salinidad mensual elevado"),
+        "sal_month_to_month_spike": ("🚨", "Salto de salinidad mensual crítico"),
+        # Tendencias interanuales
+        "temp_annual_median_trend": ("📈", "Tendencia en la mediana anual"),
+        "temp_annual_median_trend_extreme": ("🚨", "Pendiente de mediana anual extrema"),
+        "temp_window_median_shift": ("🔄", "Cambio en la mediana trienal"),
+        "series_too_short_for_trend": ("📅", "Serie demasiado corta para tendencia"),
+        
+        "sampling_date_unparseable": ("📅", "Fecha de muestreo no parseable"),
+        "sampling_date_partially_missing": ("📅", "Fechas parcialmente omitidas"),
+        "sampling_date_out_of_calendar_range": ("📅", "Fecha fuera del rango permitido"),
+        "missing_column": ("📋", "Columna de datos ausente"),
+        "empty_after_coerce": ("📋", "Sin registros válidos tras la conversión"),
+        "temp_out_of_absolute_range": ("🌡️", "Temperatura fuera de rango absoluto"),
+        "salinity_out_of_absolute_range": ("💧", "Salinidad fuera de rango absoluto"),
+        "temp_large_vertical_jump": ("📉", "Salto vertical de temperatura crítico"),
+        "temp_moderate_vertical_jump": ("📉", "Salto vertical de temperatura moderado"),
+    }
+    
+    if v.code in _MAP:
+        icon, title = _MAP[v.code]
+    else:
+        icon = "⚠️"
+        cleaned_code = v.code
+        if cleaned_code.startswith("temp_"):
+            cleaned_code = cleaned_code[5:]
+        elif cleaned_code.startswith("sal_"):
+            cleaned_code = cleaned_code[4:]
+        title = cleaned_code.replace("_", " ").strip().capitalize()
+    
     if v.code == "temp_window_median_shift":
         yl = d.get("years_last") or []
         yp = d.get("years_prev") or []
@@ -518,24 +732,24 @@ def format_contract_warning_postchart(v: Violation) -> str:
         if yl and yp and delta is not None:
             yi_l = [int(x) for x in yl]
             yi_p = [int(x) for x in yp]
-
             def _span(years: list[int]) -> str:
                 return f"{min(years)}–{max(years)}" if len(years) > 1 else str(years[0])
-
             diff_f = float(delta)
             sym = "↓" if diff_f < 0 else "↑"
             return (
-                f"**Temperatura {_span(yi_l)} vs {_span(yi_p)} (est. {est}):** "
-                f"{sym} {abs(diff_f):.2f} °C en la mediana anual del trieno reciente. "
-                "*Puede reflejar variabilidad climática, no es un fallo de medición.*"
+                f"{icon} <b>{title} (est. {est}):</b> {_span(yi_l)} vs {_span(yi_p)} "
+                f"{sym} {abs(diff_f):.2f} °C. *Refleja variabilidad climática natural.*"
             )
     if v.code in ("temp_annual_median_trend", "temp_annual_median_trend_extreme"):
         slope = d.get("slope_c_per_year")
         est = d.get("estacion", "?")
         if slope is not None:
             return (
-                f"**Tendencia larga (estación {est}):** mediana anual cambia ~**{float(slope):+.3f} °C/año**. "
-                "Puede ser real o mezcla de fuentes; no es un fallo automático de datos."
+                f"{icon} <b>{title} (est. {est}):</b> cambia ~<b>{float(slope):+.3f} °C/año</b>. "
+                "*Puede deberse a mezcla de fuentes o calibración; no es un fallo automático.*"
             )
-    # Genérico, sin icono emoji (más sobrio en Streamlit)
-    return f"**`{v.code}`** · {v.message}"
+            
+    msg = v.message
+    # Limpiar el código si viene prefijado en v.message
+    msg_clean = msg.replace(f"{v.code}: ", "")
+    return f"{icon} <b>{title}:</b> {msg_clean}"

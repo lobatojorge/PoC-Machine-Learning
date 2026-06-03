@@ -1,19 +1,17 @@
 """
-run/app.py — Visor IEO · Radiales oceánicos
-==========================================
+run/app.py — Sistema de Alerta Temprana · Calidad de datos ambientales (IEO)
+============================================================================
 
-Aviso práctico
---------------
-Este dashboard usa Pandas/Plotly para la UI.
-El pipeline de producción (ingesta + anomalías + reportes) no depende de Pandas.
+Visor Streamlit multi-radial Cantábrico + capa de presentación para
+stakeholders (divulgación web / arquitectura agnóstica).
 
-Las funciones de gráficas reutilizables (Plotly puro, sin Streamlit) viven en
-`src/ieo/reports/figures_radiales.py`; este archivo solo contiene el pegamento
-de Streamlit (caché, CSS, lógica de UI).
+La lógica de pipeline, contrato radial y carga Parquet/CNV permanece aquí;
+textos EWS, KPIs y selector de fuente viven en ``viewer_presentation.py``.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 from datetime import datetime
@@ -26,7 +24,7 @@ _IEO_LOCAL = _SRC_DIR / "ieo"
 
 
 def _bootstrap_ieo_repo_path() -> None:
-    """`run/` para `cudillero_csv`; `src/` primero; quita `ieo` pip homónimo de `sys.modules`."""
+    """`run/` en path; `src/` primero; quita `ieo` pip homónimo de `sys.modules`."""
     run_s = str(RUN_DIR)
     if run_s not in sys.path:
         sys.path.insert(0, run_s)
@@ -65,16 +63,17 @@ from pipeline_runs import (
     resolve_run_root_for_ui,
 )
 from ieo.reports.figures_radiales import (
-    build_cantabrico_radials_overview_map,
     build_radial_transect_map_figure,
     parse_radial_station_coords_from_methodology,
 )
 from ieo.reports.radial_cnv_geo import build_radial_geo_index, stations_to_plotly_dicts
+from ieo.cnv_layout import cnv_data_tree_fingerprint
+from ieo.paths import cnv_dir
 
 import streamlit as st
 
 st.set_page_config(
-    page_title="Radiales Cantábrico · IEO",
+    page_title="Alerta Temprana · Calidad Ambiental · IEO",
     layout="wide",
     page_icon=str(RUN_DIR / "assets" / "logo.webp"),
 )
@@ -95,10 +94,9 @@ code, pre, .mono, kbd {
 }
 
 /* Tokens Dark Abyss en componentes Streamlit no cubiertos por config.toml */
-section[data-testid="stSidebar"] {
-    background-color: #0E1626 !important;
-    border-right: 1px solid rgba(255,255,255,0.07) !important;
-}
+/* Sidebar oculta: selección por mapa principal */
+section[data-testid="stSidebar"] { display: none !important; }
+[data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
 .stTabs [data-baseweb="tab-list"] {
     background-color: #080D16 !important;
     gap: 4px;
@@ -151,10 +149,6 @@ details[data-testid="stExpander"] > div[data-testid="stExpanderDetails"] {
 .stCaption, small { color: #5B7FA3 !important; }
 /* Separadores */
 hr { border-color: rgba(255,255,255,0.07) !important; }
-/* Ocultar botón nativo de colapso de sidebar */
-[data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"] {
-    display: none !important;
-}
 /* Ocultar barra de herramientas de Streamlit (Deploy, menú) */
 [data-testid="stToolbar"],
 [data-testid="stDecoration"],
@@ -265,105 +259,87 @@ def _render_pipeline_provenance_banner(
     n_anom: int,
     fecha_min: str,
     fecha_max: str,
+    *,
+    radial_label: str = "",
+    station_codes: str = "",
 ) -> None:
     """
     Cuatro tarjetas de proveniencia: comunican que los datos han pasado por un pipeline
     de ingesta, auditoría, QC y análisis antes de llegar al visor.
     """
     pct_clean = round(100.0 * n_clean / max(n_clean + n_anom, 1))
+    codes_txt = station_codes or "estaciones de la radial"
+    radial_txt = f" · {radial_label}" if radial_label else ""
 
     _SVG_ATTRS = "width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='#00BFFF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'"
-    _SVG_ANCHOR = (
+    # Ingesta: base de datos / importar
+    _SVG_INGEST = (
         f"<svg {_SVG_ATTRS}>"
-        "<circle cx='12' cy='5' r='3'/>"
-        "<line x1='12' y1='8' x2='12' y2='22'/>"
-        "<path d='M5 15H2a10 10 0 0 0 20 0h-3'/>"
+        "<ellipse cx='12' cy='5' rx='9' ry='3'/>"
+        "<path d='M21 12c0 1.66-4 3-9 3s-9-1.34-9-3'/>"
+        "<path d='M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5'/>"
         "</svg>"
     )
-    _SVG_CHECK = (
+    # Filtrado: embudo
+    _SVG_FILTER = (
         f"<svg {_SVG_ATTRS}>"
-        "<circle cx='12' cy='12' r='10'/>"
-        "<path d='m9 12 2 2 4-4'/>"
+        "<polygon points='22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3'/>"
         "</svg>"
     )
-    _SVG_ALERT = (
-        f"<svg {_SVG_ATTRS} stroke='#f59e0b'>"
-        "<path d='m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 22h16a2 2 0 0 0 1.73-4Z'/>"
-        "<line x1='12' y1='9' x2='12' y2='13'/>"
-        "<line x1='12' y1='17' x2='12.01' y2='17'/>"
+    # Detección de anomalías: radar / scan
+    _SVG_SCAN = (
+        f"<svg {_SVG_ATTRS}>"
+        "<circle cx='12' cy='12' r='2'/>"
+        "<path d='M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14'/>"
         "</svg>"
     )
-    _SVG_ACTIVITY = (
+    # Análisis: gráfica de barras
+    _SVG_CHART = (
         f"<svg {_SVG_ATTRS}>"
-        "<path d='M22 12h-4l-3 9L9 3l-3 9H2'/>"
+        "<line x1='18' y1='20' x2='18' y2='10'/>"
+        "<line x1='12' y1='20' x2='12' y2='4'/>"
+        "<line x1='6' y1='20' x2='6' y2='14'/>"
+        "<line x1='2' y1='20' x2='22' y2='20'/>"
         "</svg>"
     )
 
     items = [
-        (
-            _SVG_ANCHOR,
-            "Ingesta estandarizada",
-            "Perfiles SeaBird `.cnv` en formato canónico. Columnas normalizadas, fechas "
-            "validadas, radial identificada automáticamente (E1CU · E2CU · E3CU).",
-        ),
-        (
-            _SVG_CHECK,
-            f"Datos validados · {pct_clean}\u202f%",
-            f"{n_clean:,}\u202fregistros pasan el control de calidad. "
-            f"{n_anom:,}\u202fvalores atípicos quedan segregados y trazables, nunca eliminados.",
-        ),
-        (
-            _SVG_ALERT,
-            "Detección de anomalías",
-            "Isolation Forest multivariante (T, S, profundidad) con semilla fija. "
-            "Reproducible entre ejecuciones del pipeline.",
-        ),
-        (
-            _SVG_ACTIVITY,
-            "Análisis temporal · ATAC",
-            f"Serie mensual {fecha_min}\u2013{fecha_max}. "
-            "Descomposición Marcos + bandas iid sobre residuos.",
-        ),
+        (_SVG_INGEST,  "Ingesta",               ""),
+        (_SVG_FILTER,  "Filtrado",               ""),
+        (_SVG_SCAN,    "Detección de anomalías", ""),
+        (_SVG_CHART,   "Análisis",               ""),
     ]
     footer_note = (
-        "Los números corresponden al conjunto Parquet cargado (se actualizan al cambiar de ejecución). "
-        "Visor de resultados validados · no sustituye el informe científico firmado."
+        "Cifras de la última corrida cargada en el visor. "
+        "Datos procesados mediante pipeline reproducible con trazabilidad completa."
     )
 
-    parts = "".join(
-        f"<div style='"
-        f"border:1px solid rgba(255,255,255,0.07);"
-        f"border-top:2px solid #00BFFF;"
-        f"border-radius:8px;"
-        f"padding:14px 16px 12px;"
-        f"background:#0E1626;"
-        f"display:flex;flex-direction:column;gap:8px;"
-        f"'>"
-        f"<div style='margin-bottom:2px;line-height:1;'>{icon}</div>"
-        f"<div style='"
-        f"font-size:0.65rem;"
-        f"font-weight:700;"
-        f"text-transform:uppercase;"
-        f"letter-spacing:0.1em;"
-        f"color:#5B7FA3;"
-        f"'>{title}</div>"
-        f"<div style='"
-        f"font-size:0.74rem;"
-        f"color:#A8BBCF;"
-        f"line-height:1.6;"
-        f"'>{body}</div>"
-        f"</div>"
-        for icon, title, body in items
+    parts = []
+    for i, (icon, title, _body) in enumerate(items):
+        if i > 0:
+            parts.append(
+                '<div style="display:flex;align-items:center;color:#5B7FA3;font-size:1.5rem;'
+                'padding:0 6px;">&rsaquo;</div>'
+            )
+        parts.append(
+            f'<div style="flex:1;text-align:center;padding:10px 4px;">'
+            f'<div style="margin-bottom:6px;line-height:1;">{icon}</div>'
+            f'<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
+            f'letter-spacing:0.1em;color:#E2EAF4;">{title}</div>'
+            f'</div>'
+        )
+
+    html = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'background:linear-gradient(90deg,#0E1626 0%,#080D16 100%);'
+        'border:1px solid rgba(255,255,255,0.07);border-radius:10px;'
+        'padding:10px 16px;margin:14px 0 10px;">'
+        + "".join(parts)
+        + '</div>'
+        f"<p style='font-size:0.66rem;color:#5B7FA3;margin:0 0 14px 0;"
+        f"font-family:\"JetBrains Mono\",monospace;text-align:center;'>{footer_note}</p>"
     )
-    grid_html = (
-        "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"
-        "margin-top:10px;margin-bottom:12px;'>"
-        + parts
-        + "</div>"
-        f"<p style='font-size:0.68rem;color:#5B7FA3;margin:0;"
-        f"font-family:\"JetBrains Mono\",monospace;'>{footer_note}</p>"
-    )
-    st.markdown(grid_html, unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def _render_data_governance_card() -> None:
@@ -376,17 +352,37 @@ def _render_data_governance_card() -> None:
 
 
 @st.cache_data(show_spinner="Cargando Parquet de la ejecución seleccionada…")
-def load_cudillero_pipeline_viewer(run_root_str: str, cache_token: str) -> PipelineViewerLoadResult | None:
-    """``cache_token`` solo participa en la clave de caché de Streamlit (mtime/tamaño del Parquet limpio)."""
+def load_pipeline_viewer_data_for_ui(run_root_str: str, cache_token: str) -> PipelineViewerLoadResult | None:
+    """Carga Parquet limpio + anomalías de una corrida (multi-radial).
+
+    ``cache_token`` participa en la clave de caché de Streamlit (mtime/tamaño del Parquet limpio).
+    """
     _ = cache_token
     return load_pipeline_viewer_data(Path(run_root_str))
 
 
+_RADIAL_GEO_DISK_CACHE = Path("outputs") / "temporal" / "radial_geo_index.cache.json"
+
+
 @st.cache_data(show_spinner="Indexando radiales en data/cnv/…")
 def _cached_radial_geo_index(project_root_str: str, cache_token: str) -> dict:
-    _ = cache_token
-    idx = build_radial_geo_index(Path(project_root_str))
-    return {
+    root = Path(project_root_str)
+    cache_path = root / _RADIAL_GEO_DISK_CACHE
+    if cache_path.is_file() and cache_token not in ("missing", "empty"):
+        try:
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+            if raw.get("token") == cache_token and isinstance(raw.get("cities"), list):
+                return {
+                    "cities": raw["cities"],
+                    "stations_by_radial": raw.get("stations_by_radial") or {},
+                    "n_cnv_scanned": int(raw.get("n_cnv_scanned", 0)),
+                    "n_with_coords": int(raw.get("n_with_coords", 0)),
+                }
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    idx = build_radial_geo_index(root)
+    payload = {
         "cities": [
             {
                 "radial_id": c.radial_id,
@@ -404,17 +400,18 @@ def _cached_radial_geo_index(project_root_str: str, cache_token: str) -> dict:
         "n_cnv_scanned": idx.n_cnv_scanned,
         "n_with_coords": idx.n_with_coords,
     }
+    if cache_token not in ("missing", "empty"):
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            to_write = {"token": cache_token, **payload}
+            cache_path.write_text(json.dumps(to_write, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    return payload
 
 
 def _cnv_index_cache_token(project_root: Path) -> str:
-    cnv_d = project_root / "data" / "cnv"
-    if not cnv_d.is_dir():
-        return "missing"
-    files = list(cnv_d.rglob("*.cnv"))
-    if not files:
-        return "empty"
-    total_mtime = max(p.stat().st_mtime_ns for p in files)
-    return f"{len(files)}:{total_mtime}"
+    return cnv_data_tree_fingerprint(cnv_dir(project_root))
 
 
 @st.cache_data(show_spinner="Cargando perfiles .cnv de la radial…", ttl=3600)
@@ -457,10 +454,17 @@ def _map_selection_points(raw_map: object) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _render_investigator_highlights(res: object, var_unt: str) -> None:  # type: ignore[type-arg]
+def _render_investigator_highlights(
+    res: object,
+    var_unt: str,
+    pipe_viewer: object | None = None,
+    station_id: int | None = None,
+    radial_id: str | None = None,
+    violations: list | None = None,
+) -> None:
     """
-    Columna derecha del layout Q&A: 5 mini-cards con hitos de la serie temporal
-    calculados desde res.pipe (DataFrame) y res.meta (dict).
+    3 hitos de la serie temporal + 2 tarjetones de calidad del pipeline
+    (contrato radial e Isolation Forest) calculados desde res.pipe y res.meta.
     """
     pipe = res.pipe  # type: ignore[attr-defined]
     meta = res.meta  # type: ignore[attr-defined]
@@ -481,7 +485,7 @@ def _render_investigator_highlights(res: object, var_unt: str) -> None:  # type:
     if len(fitted_train) > 12:
         amp = float(fitted_train.max() - fitted_train.min())
         amp_stat = f"Δ {amp:.1f} {var_unt}"
-        amp_body = "Diferencia máx.–mín. del ciclo estacional modelado (entrenamiento)."
+        amp_body = "Diferencia máx.–mín. del ciclo estacional modelado."
         amp_accent = "#00BFFF"
     else:
         amp_stat, amp_body, amp_accent = "—", "Muestra insuficiente.", "#5B7FA3"
@@ -496,40 +500,9 @@ def _render_investigator_highlights(res: object, var_unt: str) -> None:  # type:
         sym = "↑" if slope_f > 0 else "↓"
         trend_stat = f"{sym} {abs(slope_f):.3f} {var_unt}/año"
         trend_body = "Pendiente lineal estimada del ajuste (período de entrenamiento)."
-        trend_accent = "#f59e0b" if abs(slope_f) > 0.05 else "#22c55e"
+        trend_accent = "#ef4444" if slope_f > 0 else "#22c55e"
     else:
         trend_stat, trend_body, trend_accent = "—", "No disponible.", "#5B7FA3"
-
-    # 4. Observaciones del holdout fuera de la banda 95 %
-    holdout_obs = pipe.loc[(is_holdout_col == True) & pipe["observation"].notna()]  # noqa: E712
-    n_holdout = len(holdout_obs)
-    n_out = 0
-    if n_holdout > 0 and "temp_fc_lo_95" in pipe.columns and "temp_fc_hi_95" in pipe.columns:
-        out_mask = (holdout_obs["observation"] < holdout_obs["temp_fc_lo_95"]) | (
-            holdout_obs["observation"] > holdout_obs["temp_fc_hi_95"]
-        )
-        n_out = int(out_mask.sum())
-    pct_out = round(100 * n_out / max(n_holdout, 1)) if n_holdout > 0 else 0
-    out_accent = "#22c55e" if pct_out == 0 else "#f59e0b" if pct_out < 30 else "#ef4444"
-    out_stat = f"{n_out} / {n_holdout}" if n_holdout > 0 else "—"
-    _holdout_label = f"últimos {n_holdout} meses" if n_holdout > 0 else "validación"
-    out_body = (
-        f"{pct_out}\u202f% fuera de la banda 95\u202f% en los {_holdout_label}."
-        if n_holdout > 0
-        else "Sin período de validación disponible."
-    )
-
-    # 5. Dato más reciente
-    last_obs_rows = pipe.loc[pipe["observation"].notna()]
-    if len(last_obs_rows) > 0:
-        last_row = last_obs_rows.iloc[-1]
-        last_val = float(last_row["observation"])
-        last_date = pd.to_datetime(last_row["fecha"]).strftime("%b %Y")
-        last_stat = f"{last_val:.2f} {var_unt}"
-        last_body = f"Última observación registrada: {last_date}."
-        last_accent = "#1a9aff"
-    else:
-        last_stat, last_body, last_accent = "—", "Sin datos.", "#5B7FA3"
 
     # SVG icons (18 px, stroke-only)
     _s = (
@@ -539,8 +512,6 @@ def _render_investigator_highlights(res: object, var_unt: str) -> None:  # type:
     _icon_range = f"<svg {_s}><line x1='3' y1='6' x2='21' y2='6'/><line x1='3' y1='12' x2='21' y2='12'/><line x1='3' y1='18' x2='21' y2='18'/></svg>"
     _icon_wave = f"<svg {_s}><path d='M2 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0'/></svg>"
     _icon_trend = f"<svg {_s}><polyline points='22 7 13.5 15.5 8.5 10.5 2 17'/><polyline points='16 7 22 7 22 13'/></svg>"
-    _icon_band = f"<svg {_s}><circle cx='12' cy='12' r='10'/><line x1='12' y1='8' x2='12' y2='12'/><line x1='12' y1='16' x2='12.01' y2='16'/></svg>"
-    _icon_last = f"<svg {_s}><circle cx='12' cy='12' r='1'/><path d='M20.2 20.2c2.04-2.03.02-7.36-4.5-11.9C11.2 3.8 5.9 1.8 3.8 3.8-2.04 5.83 7.98 15.36 8 15.9'/></svg>"
 
     def _hi_card(icon: str, label: str, stat: str, body: str, accent: str) -> str:
         return (
@@ -557,20 +528,145 @@ def _render_investigator_highlights(res: object, var_unt: str) -> None:  # type:
             f"</div>"
         )
 
+    # ── 3 hitos de la serie ────────────────────────────────────────────────
     cards = (
         _hi_card(_icon_range, "Rango histórico", rango_stat, rango_body, rango_accent)
         + _hi_card(_icon_wave, "Amplitud estacional", amp_stat, amp_body, amp_accent)
         + _hi_card(_icon_trend, "Tendencia", trend_stat, trend_body, trend_accent)
-        + _hi_card(_icon_band, "Pronóstico vs obs.", out_stat, out_body, out_accent)
-        + _hi_card(_icon_last, "Último dato", last_stat, last_body, last_accent)
     )
     st.markdown(
         "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
         "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;"
         "margin:20px 0 10px;border-top:1px solid rgba(255,255,255,0.07);padding-top:16px;'>"
         "Hitos de la serie</p>"
-        f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;'>"
+        "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;'>"
         + cards
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Tarjetones de calidad del pipeline ─────────────────────────────────
+    # Violaciones de contrato
+    _rc_mod = _load_radial_contract_mod()
+    vios = violations or []
+    n_err = len([v for v in vios if v.severity == _rc_mod.ViolationSeverity.ERROR])
+    n_warn = len([v for v in vios if v.severity == _rc_mod.ViolationSeverity.WARNING])
+    if n_err == 0 and n_warn == 0:
+        vio_stat = "Sin incidencias"
+        vio_accent = "#10b981"
+    elif n_err > 0:
+        vio_stat = f"{n_err} error · {n_warn} aviso"
+        vio_accent = "#ef4444"
+    else:
+        vio_stat = f"{n_warn} aviso"
+        vio_accent = "#f59e0b"
+
+    # Anomalías IF por estación
+    n_anom_est = 0
+    if (
+        pipe_viewer is not None
+        and hasattr(pipe_viewer, "df_anomalies")
+        and station_id is not None
+        and radial_id is not None
+    ):
+        from ieo.radiales_catalog import filter_dataframe_to_radial  # noqa: PLC0415
+        from ieo.paths import cnv_dir  # noqa: PLC0415
+
+        _cnv_root = cnv_dir(PROJECT_ROOT)
+        df_anom_radial, _ = filter_dataframe_to_radial(
+            pipe_viewer.df_anomalies, radial_id, cnv_root=_cnv_root
+        )
+        if not df_anom_radial.empty:
+            n_anom_est = int(
+                (df_anom_radial["estacion"] == int(station_id)).sum()
+            )
+
+    if n_anom_est == 0:
+        anom_stat = "0 filas marcadas"
+        anom_accent = "#10b981"
+    else:
+        anom_stat = f"{n_anom_est:,} filas marcadas"
+        anom_accent = "#f59e0b"
+
+    # Contenido desplegable del contrato
+    if n_err == 0 and n_warn == 0:
+        _vio_detail = "<p style='color:#10b981;font-size:0.72rem;margin:6px 0 0;'>Sin incidencias en esta serie.</p>"
+    else:
+        _lines_html = "".join(
+            f"<div style='padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);"
+            f"font-size:0.71rem;color:#E2EAF4;line-height:1.4;'>{_rc_mod.format_contract_warning_postchart(v)}</div>"
+            for v in vios
+        )
+        _vio_detail = f"<div style='margin-top:8px;'>{_lines_html}</div>"
+
+    # Contenido desplegable del IF
+    _if_detail = (
+        "<table style='width:100%;border-collapse:collapse;font-size:0.71rem;margin-top:8px;'>"
+        "<tr style='color:#5B7FA3;'><th style='text-align:left;padding:3px 6px;'>Parámetro</th>"
+        "<th style='text-align:left;padding:3px 6px;'>Valor</th></tr>"
+        "<tr><td style='padding:3px 6px;color:#A8BBCF;font-family:\"JetBrains Mono\",monospace;'>"
+        "<code>contamination</code></td><td style='padding:3px 6px;color:#E2EAF4;'>0.05 (5\u202f% por estrato)</td></tr>"
+        "<tr style='background:rgba(255,255,255,0.02);'><td style='padding:3px 6px;color:#A8BBCF;"
+        "font-family:\"JetBrains Mono\",monospace;'><code>n_estimators</code></td>"
+        "<td style='padding:3px 6px;color:#E2EAF4;'>hasta 200 \u00e1rboles</td></tr>"
+        "<tr><td style='padding:3px 6px;color:#A8BBCF;font-family:\"JetBrains Mono\",monospace;'>"
+        "<code>random_state</code></td><td style='padding:3px 6px;color:#E2EAF4;'>42</td></tr>"
+        "</table>"
+    )
+
+    # Tarjetones desplegables como <details>/<summary>
+    _card_css = (
+        "<style>"
+        "details.ieo-pipe-card{background:#0A1220;border-radius:10px;overflow:hidden;}"
+        "details.ieo-pipe-card summary{"
+        "  list-style:none;cursor:pointer;padding:12px 14px;"
+        "  display:flex;flex-direction:column;gap:2px;"
+        "}"
+        "details.ieo-pipe-card summary::-webkit-details-marker{display:none;}"
+        "details.ieo-pipe-card[open] summary{border-bottom:1px solid rgba(255,255,255,0.06);}"
+        ".ieo-pipe-body{padding:0 14px 12px;}"
+        "</style>"
+    )
+
+    _card_vio = (
+        f"<details class='ieo-pipe-card' style='border-top:2px solid {vio_accent};'>"
+        f"<summary>"
+        f"<span style='display:flex;align-items:center;gap:6px;'>"
+        f"<span style='font-size:0.57rem;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:0.12em;color:#5B7FA3;'>🛡 Contrato radial</span>"
+        f"<span style='font-size:0.55rem;color:#5B7FA3;margin-left:auto;'>▾</span>"
+        f"</span>"
+        f"<span style='font-family:\"JetBrains Mono\",monospace;font-size:0.92rem;"
+        f"font-weight:700;color:{vio_accent};'>{vio_stat}</span>"
+        f"</summary>"
+        f"<div class='ieo-pipe-body'>{_vio_detail}</div>"
+        f"</details>"
+    )
+
+    _card_if = (
+        f"<details class='ieo-pipe-card' style='border-top:2px solid {anom_accent};'>"
+        f"<summary>"
+        f"<span style='display:flex;align-items:center;gap:6px;'>"
+        f"<span style='font-size:0.57rem;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:0.12em;color:#5B7FA3;'>🔍 Isolation Forest</span>"
+        f"<span style='font-size:0.55rem;color:#5B7FA3;margin-left:auto;'>▾</span>"
+        f"</span>"
+        f"<span style='font-family:\"JetBrains Mono\",monospace;font-size:0.92rem;"
+        f"font-weight:700;color:{anom_accent};'>{anom_stat}</span>"
+        f"</summary>"
+        f"<div class='ieo-pipe-body'>{_if_detail}</div>"
+        f"</details>"
+    )
+
+    st.markdown(
+        "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
+        "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;"
+        "margin:14px 0 6px;'>"
+        "Calidad del pipeline</p>"
+        + _card_css
+        + f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;'>"
+        + _card_vio
+        + _card_if
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -602,149 +698,260 @@ def _monthly_value_at_depth(
     )
 
 
-def render_radiales_explorer() -> None:
-    """Hub Radiales: localidad (mapa) → estación → series Marcos+ATAC."""
+def _load_radial_viewer_frame(
+    project_root: Path,
+    radial_id: str,
+    radial_label: str,
+    *,
+    cnv_tok: str,
+    pipeline_run_select: str,
+) -> tuple[
+    pd.DataFrame | None,
+    PipelineViewerLoadResult | None,
+    dict,
+    str,
+    str | None,
+    str | None,
+    str | None,
+    int,
+    int,
+    pd.Series,
+]:
+    """Carga Parquet de la corrida (`outputs/runs/`) si existe, filtrando por radial; si no, `.cnv`."""
+    import time  # noqa: PLC0415
 
-    if "radial_id" not in st.session_state:
-        st.session_state["radial_id"] = None
-    if "estacion_seleccionada_csv" not in st.session_state:
-        st.session_state["estacion_seleccionada_csv"] = 1
-
-    _rc = _load_radial_contract_mod()
-    _bootstrap_ieo_repo_path()
+    from ieo.paths import cnv_dir  # noqa: PLC0415
     from ieo.radiales_catalog import RADIAL_ID_CUDILLERO, filter_dataframe_to_radial  # noqa: PLC0415
+    from ieo.radial_canonical_station import apply_canonical_station_column  # noqa: PLC0415
+    from ieo.transform.canonical_schema import resolve_depth_source_column  # noqa: PLC0415
 
-    geo = _cached_radial_geo_index(
-        str(PROJECT_ROOT.resolve()),
-        _cnv_index_cache_token(PROJECT_ROOT),
-    )
-    cities: list[dict] = geo.get("cities", [])
-    stations_by_radial: dict[str, list] = geo.get("stations_by_radial", {})
-
-    st.markdown(
-        """
-<div style="background:linear-gradient(135deg,#0E1626 0%,#080D16 100%);
-border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:28px 32px 20px;margin-bottom:16px;">
-  <span style="display:inline-flex;padding:4px 10px;border-radius:9999px;
-border:1px solid rgba(0,191,255,0.25);background:rgba(0,191,255,0.08);
-font-family:'JetBrains Mono',monospace;font-size:0.65rem;font-weight:700;
-text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin-bottom:14px;">
-Radiales · Cantábrico</span>
-  <h1 style="font-family:'Plus Jakarta Sans',sans-serif;font-size:2rem;font-weight:800;
-color:#E2EAF4;margin:0 0 6px;">Radiales oceánicas</h1>
-  <p style="font-size:0.88rem;color:#A8BBCF;margin:0;">
-    Elige localidad en el mapa · luego estación · visualiza temperatura y salinidad a 5&nbsp;m
-  </p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    if not cities:
-        st.warning("No hay radiales con coordenadas en `data/cnv/`. Coloca ficheros `.cnv` y recarga.")
-        st.stop()
-
-    st.markdown(
-        "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
-        "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin:12px 0 8px;'>"
-        "1 · Localidad</p>",
-        unsafe_allow_html=True,
-    )
-
-    city_labels = {c["radial_id"]: str(c["label"]) for c in cities}
-    city_options = [c["radial_id"] for c in cities]
-    prev_radial = st.session_state.get("radial_id")
-
-    with st.sidebar:
-        st.markdown("### Radial")
-        pick = st.selectbox(
-            "Localidad",
-            options=[""] + city_options,
-            format_func=lambda x: "— elige —" if not x else city_labels.get(x, x),
-            index=(city_options.index(prev_radial) + 1) if prev_radial in city_options else 0,
-            key="sidebar_radial_pick",
-        )
-        if pick and pick != prev_radial:
-            st.session_state["radial_id"] = pick
-            st.session_state.pop("station_tab_temp", None)
-            st.session_state.pop("station_tab_sal", None)
-
-    fig_overview = build_cantabrico_radials_overview_map(
-        cities,
-        selected_radial_id=st.session_state.get("radial_id"),
-    )
-    st.caption("Haz clic en una localidad del mapa (o elige en la barra lateral).")
-    st.plotly_chart(
-        fig_overview,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="points",
-        key="radial_overview_map",
-        config={"displayModeBar": False},
-    )
-
-    for pt in _map_selection_points(st.session_state.get("radial_overview_map")):
-        rid = _point_customdata_scalar(pt)
-        if rid and rid in city_labels:
-            if st.session_state.get("radial_id") != rid:
-                st.session_state["radial_id"] = rid
-                st.session_state.pop("station_tab_temp", None)
-                st.session_state.pop("station_tab_sal", None)
-            break
-
-    radial_id = st.session_state.get("radial_id")
-    if not radial_id or radial_id not in city_labels:
-        st.info("Selecciona **Cudillero**, **Gijón**, **Santander** o **A Coruña** en el mapa.")
-        st.stop()
-
-    radial_label = city_labels[radial_id]
+    _t_load = time.perf_counter()
     pipe: PipelineViewerLoadResult | None = None
     cnv_stats: dict = {}
     data_source = "cnv"
+    df_c: pd.DataFrame | None = None
+    col_temp: str | None = None
+    col_sal: str | None = None
+    col_prof: str | None = None
+    n_anom_banner = 0
+    n_clean_banner = 0
+    _cnv_root = cnv_dir(project_root)
 
-    if radial_id == RADIAL_ID_CUDILLERO:
-        run_root = resolve_run_root_for_ui(
-            PROJECT_ROOT,
-            st.session_state.get("pipeline_run_select", LATEST_SENTINEL),
+    run_root = resolve_run_root_for_ui(project_root, pipeline_run_select)
+    if run_root is not None:
+        cache_tok = f"{clean_parquet_cache_token(run_root)}:datefilt-v2"
+        pipe = load_pipeline_viewer_data_for_ui(str(run_root.resolve()), cache_tok)
+
+    if pipe is not None:
+        df_c, n_other_radial = filter_dataframe_to_radial(
+            pipe.df_clean, radial_id, cnv_root=_cnv_root
         )
-        if run_root is not None:
-            cache_tok = clean_parquet_cache_token(run_root)
-            pipe = load_cudillero_pipeline_viewer(str(run_root.resolve()), cache_tok)
-
-    if pipe is not None and radial_id == RADIAL_ID_CUDILLERO:
-        df_c, n_other_radial = filter_dataframe_to_radial(pipe.df_clean, RADIAL_ID_CUDILLERO)
-        if n_other_radial > 0:
-            st.warning(
-                f"Se excluyeron **{n_other_radial:,}** filas de otras radiales en el Parquet."
-            )
         col_temp, col_sal, col_prof = pipe.col_temp, pipe.col_sal, pipe.col_prof
         data_source = "pipeline"
         n_anom_banner = len(pipe.df_anomalies)
-        n_clean_banner = len(pipe.df_clean)
+        n_clean_banner = len(df_c)
+
+        if df_c.empty:
+            df_cnv, cnv_stats = _cached_radial_cnv_dataframe(
+                str(project_root.resolve()),
+                radial_id,
+                cnv_tok,
+            )
+            if not df_cnv.empty:
+                df_c = df_cnv
+                data_source = "cnv"
+                col_temp = next((c for c in df_c.columns if "temp" in str(c).lower()), "temperatura_c")
+                col_sal = next(
+                    (c for c in df_c.columns if "salin" in str(c).lower() or str(c).lower() == "sal"),
+                    "salinidad_psu",
+                )
+                _depth_src = resolve_depth_source_column([str(c) for c in df_c.columns])
+                col_prof = (
+                    "profundidad_m" if "profundidad_m" in df_c.columns else (_depth_src or "profundidad_m")
+                )
+                n_anom_banner = 0
+                n_clean_banner = len(df_c)
+            elif n_other_radial > 0:
+                st.warning(
+                    f"No hay datos de **{radial_label}** en la última corrida del pipeline. "
+                    f"Revisa que existan perfiles `.cnv` de esta radial en `data/cnv/`."
+                )
     else:
         df_c, cnv_stats = _cached_radial_cnv_dataframe(
-            str(PROJECT_ROOT.resolve()),
+            str(project_root.resolve()),
             radial_id,
-            _cnv_index_cache_token(PROJECT_ROOT),
+            cnv_tok,
         )
-        if radial_id == RADIAL_ID_CUDILLERO and pipe is None:
-            st.caption(
-                "Cudillero: lectura directa de `.cnv` (sin Parquet). "
-                "Ejecuta `python run/main.py` para anomalías."
-            )
         col_temp = next((c for c in df_c.columns if "temp" in str(c).lower()), "temperatura_c")
         col_sal = next(
             (c for c in df_c.columns if "salin" in str(c).lower() or str(c).lower() == "sal"),
             "salinidad_psu",
         )
-        col_prof = next((c for c in df_c.columns if "prof" in str(c).lower()), "profundidad_m")
+        _depth_src = resolve_depth_source_column([str(c) for c in df_c.columns])
+        col_prof = "profundidad_m" if "profundidad_m" in df_c.columns else (_depth_src or "profundidad_m")
         n_anom_banner = 0
-        n_clean_banner = len(df_c)
+        n_clean_banner = len(df_c) if df_c is not None else 0
+
+    _fc_banner = pd.Series(dtype="datetime64[ns]")
+    if df_c is not None and not df_c.empty:
+        df_c = apply_canonical_station_column(df_c, radial_id, overwrite=True)
+        _fc_banner = df_c["fecha"].dropna()
+
+    st.session_state["_viewer_load_ms"] = round((time.perf_counter() - _t_load) * 1000.0, 1)
+
+    return (
+        df_c,
+        pipe,
+        cnv_stats,
+        data_source,
+        col_temp,
+        col_sal,
+        col_prof,
+        n_anom_banner,
+        n_clean_banner,
+        _fc_banner,
+    )
+
+def render_radiales_explorer() -> None:
+    """Hub Radiales: localidad (mapa) → estación → series Marcos+ATAC."""
+
+    _rc = _load_radial_contract_mod()
+    _bootstrap_ieo_repo_path()
+    from ieo.radiales_catalog import (  # noqa: PLC0415
+        RADIAL_ID_CUDILLERO,
+        RADIAL_ID_GIJON,
+        RADIAL_STATION_CODES,
+        filter_dataframe_to_radial,
+    )
+    from ieo.radial_canonical_station import (  # noqa: PLC0415
+        apply_canonical_station_column,
+        canonical_station_options,
+        station_display_name,
+    )
+
+    st.session_state.setdefault("radial_id", RADIAL_ID_GIJON)
+    if "estacion_seleccionada_csv" not in st.session_state:
+        st.session_state["estacion_seleccionada_csv"] = 1
+
+    # Sufijo de versión: invalida @st.cache_data tras cambios en filtro de fechas (p. ej. excluir 2080).
+    cnv_tok = f"{_cnv_index_cache_token(PROJECT_ROOT)}:datefilt-v2"
+    geo = _cached_radial_geo_index(
+        str(PROJECT_ROOT.resolve()),
+        cnv_tok,
+    )
+    cities: list[dict] = geo.get("cities", [])
+    stations_by_radial: dict[str, list] = geo.get("stations_by_radial", {})
+
+    from viewer_presentation import (  # noqa: PLC0415
+        render_architecture_flow,
+        render_ews_hero,
+    )
+
+    render_ews_hero()
+    if not cities:
+        st.warning("No hay radiales con coordenadas en `data/cnv/`. Coloca ficheros `.cnv` y recarga.")
+        st.stop()
+
+    st.session_state["radial_id"] = RADIAL_ID_GIJON
+
+    city_labels = {c["radial_id"]: str(c["label"]) for c in cities}
+    radial_id = RADIAL_ID_GIJON
+    if radial_id not in city_labels:
+        st.info("No hay datos de **Gijón** en el índice geográfico.")
+        st.stop()
+
+    radial_label = city_labels[radial_id]
+    from ieo.paths import cnv_dir  # noqa: PLC0415
+
+    _cnv_root = cnv_dir(PROJECT_ROOT)
+
+    # Carga de datos antes de mapas Plotly: evita esperar tras un clic en círculos del mapa.
+    (
+        df_c,
+        pipe,
+        cnv_stats,
+        data_source,
+        col_temp,
+        col_sal,
+        col_prof,
+        n_anom_banner,
+        n_clean_banner,
+        _fc_banner,
+    ) = _load_radial_viewer_frame(
+        PROJECT_ROOT,
+        radial_id,
+        radial_label,
+        cnv_tok=cnv_tok,
+        pipeline_run_select=st.session_state.get("pipeline_run_select", LATEST_SENTINEL),
+    )
+
+    _station_codes_label = " · ".join(RADIAL_STATION_CODES.get(radial_id, ()))
+    _show_provenance_banner = data_source == "pipeline" and pipe is not None
+    if _show_provenance_banner:
+        _render_pipeline_provenance_banner(
+            n_clean=n_clean_banner,
+            n_anom=n_anom_banner,
+            fecha_min=str(_fc_banner.min().date()) if len(_fc_banner) else "—",
+            fecha_max=str(_fc_banner.max().date()) if len(_fc_banner) else "—",
+            radial_label=radial_label,
+            station_codes=_station_codes_label,
+        )
+
+
+    st.markdown(
+        "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
+        "text-transform:uppercase;letter-spacing:0.18em;color:#00BFFF;margin:12px 0 8px;'>"
+        "1 · Mapa Cantábrico</p>",
+        unsafe_allow_html=True,
+    )
+
+    from ieo.reports.figures_radiales import build_cantabrico_radials_overview_map  # noqa: PLC0415
+    fig_overview = build_cantabrico_radials_overview_map(
+        cities,
+        selected_radial_id=radial_id,
+        interactive_radial_id=radial_id,
+    )
+    st.caption(
+        f"Radial **{radial_label}**. Elige la estación con los botones de arriba; "
+        "el mapa es solo contexto geográfico."
+    )
+    st.plotly_chart(
+        fig_overview,
+        use_container_width=True,
+        key="radial_overview_map",
+        config={"displayModeBar": False},
+    )
 
     if df_c is None or df_c.empty:
+        n_on_disk = cnv_stats.get("n_radial_clasificados")
+        if n_on_disk is None and _cnv_root.is_dir():
+            from ieo.io.cnv_radial import filter_paths_by_radial  # noqa: PLC0415
+
+            _all = sorted(_cnv_root.rglob("*.cnv"))
+            _paths, _, _ = filter_paths_by_radial(_all, radial_id, cnv_root=_cnv_root)
+            n_on_disk = len(_paths)
         st.error(
             f"No hay perfiles CTD para **{radial_label}**. "
-            f"En disco: {cnv_stats.get('n_radial_clasificados', '—')} `.cnv` clasificados."
+            f"En disco: **{n_on_disk if n_on_disk is not None else '—'}** ficheros `.cnv` clasificados."
+        )
+        st.stop()
+
+    _th_dates = _rc.default_thresholds_from_env()
+    df_c, _n_drop_bad_dates = _rc.filter_sampling_dates_pandas(df_c, col_fecha="fecha", thresholds=_th_dates)
+    if _n_drop_bad_dates > 0:
+        st.warning(
+            f"Se excluyeron **{_n_drop_bad_dates:,}** filas con fecha fuera del rango "
+            f"**{_th_dates.sampling_year_min}–{_th_dates.sampling_year_max}** "
+            "(p. ej. metadatos erróneos tipo año 2080)."
+        )
+    if df_c.empty:
+        st.error("Tras filtrar fechas inválidas no quedan datos para esta radial.")
+        st.stop()
+
+    if "estacion" not in df_c.columns:
+        st.error(
+            f"El conjunto de datos para **{radial_label}** no incluye la columna `estacion`. "
+            f"Columnas disponibles: {list(df_c.columns)}. Revisa la ingesta o el Parquet de la corrida."
         )
         st.stop()
 
@@ -797,41 +1004,22 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
     )
 
 
-    if data_source == "pipeline" and pipe is not None:
-        _render_pipeline_provenance_banner(
-            n_clean=n_clean_banner,
-            n_anom=n_anom_banner,
-            fecha_min=str(_fc.min().date()) if len(_fc) else "—",
-            fecha_max=str(_fc.max().date()) if len(_fc) else "—",
-        )
-    else:
-        st.caption(
-            f"**{cnv_stats.get('n_perfiles_cargados', '—')}** perfiles `.cnv` cargados "
-            f"({cnv_stats.get('n_radial_clasificados', '—')} clasificados en disco)."
-        )
-
     depth_m = 5.0
 
     ids_map = [int(s["estacion"]) for s in stations_geo] if stations_geo else []
-    ids_data = sorted({int(float(x)) for x in df_c["estacion"].dropna().unique().tolist()})
-    opts = sorted(set(ids_map) & set(ids_data)) or ids_data or ids_map
+    opts = canonical_station_options(df_c, radial_id)
+    if ids_map:
+        opts = sorted(set(opts) & set(ids_map)) or opts
     if not opts:
         st.warning("No hay estaciones con datos en esta radial.")
         st.stop()
+    st.session_state.setdefault("station_tab_temp", opts[0])
+    st.session_state.setdefault("station_tab_sal", opts[0])
     name_by_id = {int(s["estacion"]): str(s["nombre"]) for s in stations_geo}
     for e in opts:
-        name_by_id.setdefault(int(e), f"Estación {int(e)}")
+        name_by_id[int(e)] = station_display_name(radial_id, int(e))
 
     _map_key = f"radial_transect_map_{radial_id}"
-    for pt in _map_selection_points(st.session_state.get(_map_key)):
-        est_val = _point_customdata_scalar(pt)
-        if est_val is not None and str(est_val).strip() != "":
-            clicked = int(float(est_val))
-            if clicked in opts:
-                st.session_state["station_tab_temp"] = clicked
-                st.session_state["station_tab_sal"] = clicked
-            break
-
 
     def _axis_label_for_value_column(col: str) -> str:
         c = str(col).lower()
@@ -870,8 +1058,8 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
     ) -> None:
         if df_gijon is None or df_gijon.empty:
             st.warning(
-                "No hay datos listos para graficar: revisa el **conjunto de datos** seleccionado en la barra lateral "
-                "(ejecución del pipeline)."
+                "No hay datos listos para graficar: revisa que exista una **corrida del pipeline** con Parquet "
+                "válido para Cudillero o que los `.cnv` tengan las columnas esperadas."
             )
             return
 
@@ -1031,7 +1219,7 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
                 project_root=PROJECT_ROOT,
                 monthly_5m=monthly_for_atac,
                 station_label=_est_name,
-                holdout_months=12,
+                holdout_months=1,
                 var_label=var_lbl,
                 var_units=var_unt,
                 depth_m=int(target_depth_m),
@@ -1070,48 +1258,22 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
         _gap_accent = "#10b981" if not res.gap_summary else "#f59e0b"
         _ultima = df_station["fecha"].max().strftime("%b %Y")
 
-        def _metric_card(stat: str, label: str, body: str, accent: str) -> str:
+        def _metric_simple(stat: str, label: str) -> str:
             return (
-                f"<div style='border:1px solid rgba(255,255,255,0.07);border-top:3px solid {accent};"
-                f"border-radius:8px;padding:14px 16px 12px;background:#0E1626;'>"
-                f"<div style='font-family:\"JetBrains Mono\",monospace;font-size:1.2rem;font-weight:700;"
-                f"color:{accent};margin-bottom:3px;'>{stat}</div>"
-                f"<div style='font-size:0.63rem;font-weight:700;text-transform:uppercase;"
-                f"letter-spacing:0.1em;color:#5B7FA3;margin-bottom:6px;'>{label}</div>"
-                f"<div style='font-size:0.72rem;color:#A8BBCF;line-height:1.5;'>{body}</div>"
+                f"<div style='display:flex;align-items:baseline;gap:8px;'>"
+                f"<span style='font-family:\"JetBrains Mono\",monospace;font-size:1rem;font-weight:700;color:#E2EAF4;'>{stat}</span>"
+                f"<span style='font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#A8BBCF;'>{label}</span>"
                 f"</div>"
             )
 
         _quality_cards = (
-            _metric_card(
-                f"{_pct_months}\u202f%",
-                "Cobertura mensual",
-                f"{int(n_obs_months)} de {_total_months} meses con observación "
-                f"({_fecha_min_st.strftime('%Y')}–{_fecha_max_st.strftime('%Y')})",
-                _card_accent(_pct_months),
-            )
-            + _metric_card(
-                f"{_pct_prof}\u202f%",
-                f"Perfiles válidos a {depth_lbl} m",
-                f"{_n_valid} de {_n_casts} lances alcanzan la profundidad objetivo. "
-                f"{diag_interp['n_casts_sin_cobertura_en_profundidad']} sin cobertura.",
-                _card_accent(_pct_prof),
-            )
-            + _metric_card(
-                _ultima,
-                "Última campaña",
-                "Fecha del muestreo más reciente incluido en esta serie.",
-                "#1a9aff",
-            )
-            + _metric_card(
-                str(len([s for s in res.gap_summary.split(";") if s.strip()])) if res.gap_summary else "0",
-                "Períodos sin dato",
-                _gap_label,
-                _gap_accent,
-            )
+            _metric_simple(f"{_pct_months}\u202f%", "Cobertura mensual")
+            + _metric_simple(f"{_pct_prof}\u202f%", f"Perfiles válidos a {depth_lbl} m")
+            + _metric_simple(_ultima, "Última campaña")
+            + _metric_simple(str(len([s for s in res.gap_summary.split(";") if s.strip()])) if res.gap_summary else "0", "Períodos sin dato")
         )
         st.markdown(
-            "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;'>"
+            "<div style='display:flex;flex-wrap:wrap;gap:24px;margin-bottom:12px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);'>"
             + _quality_cards
             + "</div>",
             unsafe_allow_html=True,
@@ -1119,8 +1281,15 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
 
         st.plotly_chart(res.fig, use_container_width=True)
 
-        # Hitos del investigador en horizontal
-        _render_investigator_highlights(res, var_unt)
+        # Hitos del investigador + tarjetones de calidad del pipeline
+        _render_investigator_highlights(
+            res,
+            var_unt,
+            pipe_viewer=pipe,
+            station_id=selected,
+            radial_id=radial_id,
+            violations=violations,
+        )
 
         # Acordeón FAQ
         _pairs = [s.split("|||", 1) for s in res.footer_md.split("\n\n---\n\n") if "|||" in s]
@@ -1161,6 +1330,8 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
             "}"
             "</style>"
         )
+        # Los avisos del contrato se muestran en el tarjetón desplegable "Calidad del pipeline".
+
         if _pairs:
             _items = "".join(
                 f"<details class='ieo-qa'>"
@@ -1179,36 +1350,6 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
                 unsafe_allow_html=True,
             )
 
-        if warns:
-            _warn_svg = (
-                "<svg width='16' height='16' viewBox='0 0 24 24' fill='none' "
-                "stroke='#f59e0b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>"
-                "<path d='m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 22h16a2 2 0 0 0 1.73-4Z'/>"
-                "<line x1='12' y1='9' x2='12' y2='13'/>"
-                "<line x1='12' y1='17' x2='12.01' y2='17'/>"
-                "</svg>"
-            )
-            _warn_items = "".join(
-                f"<li style='margin-bottom:4px;'>{_rc.format_contract_warning_postchart(w)}</li>"
-                for w in warns
-            )
-            st.markdown(
-                f"<div style='background:#1a1200;border:1px solid rgba(245,158,11,0.25);"
-                f"border-left:3px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-top:12px;'>"
-                f"<div style='display:flex;align-items:center;gap:7px;margin-bottom:6px;'>"
-                f"{_warn_svg}"
-                f"<span style='font-size:0.63rem;font-weight:700;text-transform:uppercase;"
-                f"letter-spacing:0.1em;color:#f59e0b;'>Notas automáticas de calidad</span>"
-                f"</div>"
-                f"<ul style='margin:0;padding-left:16px;font-size:0.74rem;color:#A8BBCF;line-height:1.6;'>"
-                f"{_warn_items}"
-                f"</ul>"
-                f"<p style='margin:8px 0 0;font-size:0.62rem;color:#5B7FA3;'>No bloquean la visualización · "
-                f"contexto estadístico, no error de medición.</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
     # ── Pestañas — primer elemento visual tras la cabecera ───────────────────
     st.markdown(
         "<p style='font-size:0.65rem;font-family:\"JetBrains Mono\",monospace;font-weight:700;"
@@ -1218,9 +1359,12 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
     )
     tab_temp, tab_sal = st.tabs(["Temperatura", "Salinidad"])
 
-    def _station_buttons(tab_key: str) -> int | None:
-        """Renderiza tres botones de estación y devuelve la seleccionada (o None)."""
-        current = st.session_state.get(tab_key)
+    def _station_buttons(tab_key: str) -> int:
+        """Botones de estación (E1GI–E4GI); sin mapa Plotly para evitar reruns pesados."""
+        current = int(st.session_state.get(tab_key, opts[0]))
+        if current not in opts:
+            current = opts[0]
+            st.session_state[tab_key] = current
         btn_labels = [name_by_id.get(o, f"Estación {o}") for o in opts]
         pad = max(0, 4 - len(opts))
         bcols = st.columns(len(opts) + pad, gap="small")
@@ -1233,8 +1377,8 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
                 use_container_width=True,
             ):
                 st.session_state[tab_key] = opt
-                st.rerun()
-        return st.session_state.get(tab_key)
+                current = opt
+        return int(st.session_state[tab_key])
 
     def _depth_buttons(suffix: str) -> None:
         """Fila de profundidades: 5 m activa, resto deshabilitadas (próximamente)."""
@@ -1261,24 +1405,15 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
         )
         _depth_buttons("temp")
         st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
-        if sel_temp is None:
-            st.markdown(
-                "<div style='text-align:center;color:#5B7FA3;padding:60px 0;font-size:0.85rem;"
-                "font-family:\"JetBrains Mono\",monospace;letter-spacing:0.04em;'>"
-                "Selecciona una estación para ver la serie temporal."
-                "</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            _render_series_and_atac(
-                df_gijon=df_c,
-                source_label=data_source,
-                col_prof=col_prof,
-                col_temp=col_temp,
-                col_value=col_temp,
-                target_depth_m=depth_m,
-                fixed_station=int(sel_temp),
-            )
+        _render_series_and_atac(
+            df_gijon=df_c,
+            source_label=data_source,
+            col_prof=col_prof,
+            col_temp=col_temp,
+            col_value=col_temp,
+            target_depth_m=depth_m,
+            fixed_station=int(sel_temp),
+        )
 
     with tab_sal:
         sel_sal = _station_buttons("station_tab_sal")
@@ -1289,25 +1424,16 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
         )
         _depth_buttons("sal")
         st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
-        if sel_sal is None:
-            st.markdown(
-                "<div style='text-align:center;color:#5B7FA3;padding:60px 0;font-size:0.85rem;"
-                "font-family:\"JetBrains Mono\",monospace;letter-spacing:0.04em;'>"
-                "Selecciona una estación para ver la serie temporal."
-                "</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            _render_series_and_atac(
-                df_gijon=df_c,
-                source_label=data_source,
-                col_prof=col_prof,
-                col_temp=col_temp,
-                col_value=col_sal,
-                target_depth_m=depth_m,
-                fixed_station=int(sel_sal),
-                widget_key_suffix="_sal",
-            )
+        _render_series_and_atac(
+            df_gijon=df_c,
+            source_label=data_source,
+            col_prof=col_prof,
+            col_temp=col_temp,
+            col_value=col_sal,
+            target_depth_m=depth_m,
+            fixed_station=int(sel_sal),
+            widget_key_suffix="_sal",
+        )
 
     # ── Transecto — mapa y contexto metodológico al final ────────────────────
     st.markdown("---")
@@ -1320,27 +1446,36 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
     col_map, col_txt = st.columns([1, 1], gap="large")
 
     with col_map:
-        st.caption("Haz clic en una estación del mapa para seleccionarla en las pestañas de arriba.")
+        st.caption("Ubicación del transecto; la estación activa se elige con los botones de la sección anterior.")
         if not stations_geo:
             st.info(
-                "Coordenadas no disponibles. Añade `<!-- E1 lat lon | … -->` al final de "
-                "`docs/metodologia_radiales_cudillero.md` para activar el mapa."
+                "Coordenadas no disponibles en las cabeceras `.cnv` ni en la metodología de la radial."
             )
-        fig_map = build_cudillero_radial_map_figure(stations_geo)
+        fig_map = build_radial_transect_map_figure(stations_geo)
         st.plotly_chart(
             fig_map,
             use_container_width=True,
-            on_select="rerun",
-            selection_mode="points",
-            key="cud_mapbox",
+            key=_map_key,
             config={"displayModeBar": False},
         )
 
     with col_txt:
         st.markdown("#### Metodología")
         st.caption("Perfiles CTD mensuales sobre la plataforma cantábrica, transecto perpendicular a la costa.")
-        md_display = re.sub(r"<!--.*?-->", "", md_method, flags=re.DOTALL).strip()
-        html_method = markdown.markdown(md_display, extensions=["extra", "sane_lists"])
+        if md_method.strip():
+            md_display = re.sub(r"<!--.*?-->", "", md_method, flags=re.DOTALL).strip()
+            html_method = markdown.markdown(md_display, extensions=["extra", "sane_lists"])
+        elif radial_id == RADIAL_ID_GIJON:
+            html_method = (
+                "<p><strong>Radial de Gijón</strong> (E1GI–E4GI): transecto desde la costa "
+                "hacia el talud con estaciones fijas de muestreo mensual.</p>"
+                "<p>Coordenadas de estaciones inferidas de las cabeceras de los perfiles `.cnv`.</p>"
+            )
+        else:
+            html_method = (
+                f"<p>Metodología de <strong>{radial_label}</strong> pendiente de documentar en "
+                f"<code>docs/metodologia_radiales_{radial_id}.md</code>.</p>"
+            )
         st.markdown(
             f"<div style='max-height:400px;overflow-y:auto;padding-right:8px;"
             f"font-size:0.86em;line-height:1.6;color:#A8BBCF;'>{html_method}</div>",
@@ -1360,6 +1495,10 @@ def main() -> None:
         except Exception:
             pass
 
+    from viewer_presentation import inject_presentation_css  # noqa: PLC0415
+
+    st.session_state.setdefault("pipeline_run_select", LATEST_SENTINEL)
+    inject_presentation_css()
     render_radiales_explorer()
 
 

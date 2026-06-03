@@ -24,16 +24,25 @@ data/quarantine/*
 !data/cnv/.gitkeep
 !data/quarantine/.gitkeep
 
+# Toy dataset sintético — SÍ se versiona (datos ficticios, sin embargo IEO)
+!data/demo_cnv/
+!data/demo_cnv/**
+
 # ─────────────────────────────────────────────
 # Outputs generados (dependen de datos reales)
 # ─────────────────────────────────────────────
 outputs/figures/*
 outputs/reports/*
 outputs/runs/*
+outputs/artifact_cache/*
+outputs/pipeline_manifest.json
 outputs/temporal/*
 outputs/audit/*
+outputs/cnv_exploratory_scatter/*
 outputs/RESUMEN_ULTIMA.html
 outputs/LEEME_RESUMEN.txt
+outputs/audit_report.md
+outputs/audit_report_gijon_bars.png
 !outputs/temporal/.gitkeep
 
 # ─────────────────────────────────────────────

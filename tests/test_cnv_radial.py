@@ -111,13 +111,14 @@ def test_rcan_coords_santander(tmp_path: Path) -> None:
 
 
 def test_coruna_xn_coords(tmp_path: Path) -> None:
+    """Coordenadas típicas Galicia occidental (no mar central N de Gijón)."""
     p = _write_cnv(
         tmp_path,
         "xnamay13rt.cnv",
         [
             "** Cruise: Radiales Cantabrico",
-            "** Latitude: 44 20.00 N",
-            "** Longitude: 005 40.00 W",
+            "** Latitude: 43 23.00 N",
+            "** Longitude: 008 24.00 W",
             "# name 0 = t090C:",
         ],
     )
