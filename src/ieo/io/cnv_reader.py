@@ -81,6 +81,7 @@ class CnvReader:
             raise ValueError(f"No se encontraron datos tras la cabecera de {source.name}.")
 
         rows: list[list[float]] = []
+        _skipped_rows: int = 0
         for raw_line in data_lines:
             stripped = raw_line.strip()
             if not stripped or stripped.startswith("*"):
@@ -88,10 +89,15 @@ class CnvReader:
             try:
                 values = [float(v) for v in stripped.split()]
             except ValueError:
+                _skipped_rows += 1
                 continue
             while len(values) < len(col_names):
                 values.append(float("nan"))
             rows.append(values[:len(col_names)])
+
+        if _skipped_rows > 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("cnv_reader: %d row(s) skipped (float parse error) in %s", _skipped_rows, source.name)
 
         if not rows:
             raise ValueError(f"El fichero {source.name} no contiene filas de datos válidas.")

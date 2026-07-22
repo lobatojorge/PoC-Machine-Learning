@@ -76,27 +76,42 @@ def apply_canonical_station_column(
         return out
 
     out = df.copy()
+    codes = RADIAL_STATION_CODES.get(radial_id, ())
+    # Build a fast upper-case code → 1-based index map
+    _upper_map: dict[str, int] = {c.upper(): i for i, c in enumerate(codes, start=1)}
 
-    def _row_canon(row: pd.Series) -> int | None:
-        sf: int | None = None
-        if "source_file" in row.index and pd.notna(row.get("source_file")):
-            sf = station_folder_from_path(str(row["source_file"]))
-        sbe = None
-        if col_estacion in row.index and pd.notna(row.get(col_estacion)):
-            try:
-                sbe = int(float(row[col_estacion]))
-            except (TypeError, ValueError):
-                sbe = None
-        return resolve_canonical_station(
-            radial_id,
-            cast=str(row["cast"]) if "cast" in row.index and pd.notna(row.get("cast")) else None,
-            acronimo=str(row["acronimo"]) if "acronimo" in row.index and pd.notna(row.get("acronimo")) else None,
-            source_file=str(row["source_file"]) if "source_file" in row.index and pd.notna(row.get("source_file")) else None,
-            station_sbe=sbe,
-            station_folder=sf,
-        )
+    def _canon_from_series(s: pd.Series) -> pd.Series:
+        """Vectorized: first code match in upper-cased text wins."""
+        def _match(text: object) -> int | None:
+            if text is None or (isinstance(text, float) and pd.isna(text)):
+                return None
+            upper = str(text).upper()
+            for code, idx in _upper_map.items():
+                if code in upper:
+                    return idx
+            return None
+        return s.map(_match)
 
-    out[CANONICAL_STATION_COL] = out.apply(_row_canon, axis=1)
+    # Try hint columns in priority order — stop at the first that yields any match
+    for hint_col in ("cast", "acronimo", "source_file"):
+        if hint_col in out.columns:
+            result = _canon_from_series(out[hint_col])
+            if result.notna().any():
+                out[CANONICAL_STATION_COL] = result
+                break
+    else:
+        # Fall back to SBE station number if it falls within valid range
+        if col_estacion in out.columns and len(codes) > 0:
+            def _sbe_match(v: object) -> int | None:
+                try:
+                    sb = int(float(v))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return None
+                return sb if 1 <= sb <= len(codes) else None
+            out[CANONICAL_STATION_COL] = out[col_estacion].map(_sbe_match)
+        else:
+            out[CANONICAL_STATION_COL] = pd.NA
+
     if overwrite:
         mapped = out[CANONICAL_STATION_COL].notna()
         out.loc[mapped, col_estacion] = out.loc[mapped, CANONICAL_STATION_COL].astype(int)

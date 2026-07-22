@@ -1,0 +1,21 @@
+# ============================================================
+# IEO Synthetic Ocean Anomaly Detector - Configuration
+# ============================================================
+
+data:
+  n_observations: 5000
+  anomaly_fraction: 0.05        # Fraction of deliberate anomalies injected
+  seed: 42
+  output_file: "data/raw/ocean_synthetic.parquet"
+
+model:
+  num_trees: 200                # isotree IsolationForest ntrees
+  max_depth: 8                  # max_depth per tree
+  sample_size: 256              # subsample size per tree
+  threshold_percentile: 95      # Score percentile above which → anomaly label
+  output_model: "models/isolation_forest.rds"
+  output_scores: "data/processed/ocean_scores.parquet"
+
+log:
+  level: "INFO"                 # INFO | DEBUG | WARN | ERROR
+  file: "logs/orchestrator.log"

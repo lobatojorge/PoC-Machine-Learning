@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 RUN_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = RUN_DIR.parent
@@ -172,14 +175,9 @@ import numpy as np
 
 METODOLOGIA_RADIALES_CUDILLERO_MD = PROJECT_ROOT / "docs" / "metodologia_radiales_cudillero.md"
 
-_radial_contract_mod: object | None = None
-
-
+@st.cache_resource
 def _load_radial_contract_mod() -> object:
-    """Import perezoso: el contrato radial solo se carga al abrir la vista (arranque más rápido)."""
-    global _radial_contract_mod
-    if _radial_contract_mod is not None:
-        return _radial_contract_mod
+    """Lazy load del contrato radial — singleton por proceso via cache_resource (thread-safe)."""
     _rc_path = _SRC_DIR / "ieo" / "validation" / "radial_contract.py"
     _rc_spec = importlib.util.spec_from_file_location("_ieo_streamlit_radial_contract", _rc_path)
     if _rc_spec is None or _rc_spec.loader is None:  # pragma: no cover
@@ -187,7 +185,6 @@ def _load_radial_contract_mod() -> object:
     _rc_mod = importlib.util.module_from_spec(_rc_spec)
     sys.modules[str(_rc_spec.name)] = _rc_mod
     _rc_spec.loader.exec_module(_rc_mod)
-    _radial_contract_mod = _rc_mod
     return _rc_mod
 
 
@@ -232,8 +229,8 @@ def load_methodology(product_id: str) -> str:
     if path.exists():
         try:
             return path.read_text(encoding="utf-8")
-        except Exception:
-            pass
+        except (OSError, UnicodeDecodeError) as exc:
+            _log.warning("app: could not read methodology file %s: %s", path, exc)
     return (
         "<p>Texto de metodología pendiente de redacción (muestreo, estaciones, instrumental). "
         f"Puede editarse en <code>docs/metodologia_{product_id}.md</code>.</p>"
@@ -361,7 +358,7 @@ def load_pipeline_viewer_data_for_ui(run_root_str: str, cache_token: str) -> Pip
     return load_pipeline_viewer_data(Path(run_root_str))
 
 
-_RADIAL_GEO_DISK_CACHE = Path("outputs") / "temporal" / "radial_geo_index.cache.json"
+_RADIAL_GEO_DISK_CACHE = PROJECT_ROOT / "outputs" / "temporal" / "radial_geo_index.cache.json"
 
 
 @st.cache_data(show_spinner="Indexando radiales en data/cnv/…")
@@ -445,7 +442,8 @@ def _map_selection_points(raw_map: object) -> list:
         if isinstance(raw_map, dict):
             return (raw_map.get("selection") or {}).get("points", [])
         return (getattr(raw_map, "selection", None) or {}).get("points", [])
-    except Exception:
+    except (AttributeError, KeyError, TypeError) as exc:
+        _log.debug("_map_selection_points: unexpected map object structure (%s): %s", type(raw_map).__name__, exc)
         return []
 
 
@@ -839,8 +837,8 @@ def render_radiales_explorer() -> None:
         str(PROJECT_ROOT.resolve()),
         cnv_tok,
     )
-    cities: list[dict] = geo.get("cities", [])
-    stations_by_radial: dict[str, list] = geo.get("stations_by_radial", {})
+    cities: list[dict] = list(geo.get("cities", []))
+    stations_by_radial: dict[str, list] = dict(geo.get("stations_by_radial", {}))
 
     from viewer_presentation import (  # noqa: PLC0415
         render_architecture_flow,
@@ -852,10 +850,11 @@ def render_radiales_explorer() -> None:
         st.warning("No hay radiales con coordenadas en `data/cnv/`. Coloca ficheros `.cnv` y recarga.")
         st.stop()
 
-    st.session_state["radial_id"] = RADIAL_ID_GIJON
-
     city_labels = {c["radial_id"]: str(c["label"]) for c in cities}
-    radial_id = RADIAL_ID_GIJON
+    radial_id = str(st.session_state.get("radial_id", RADIAL_ID_GIJON))
+    if radial_id not in city_labels:
+        radial_id = RADIAL_ID_GIJON
+        st.session_state["radial_id"] = radial_id
     if radial_id not in city_labels:
         st.info("No hay datos de **Gijón** en el índice geográfico.")
         st.stop()
@@ -1126,7 +1125,13 @@ font-family:'JetBrains Mono',monospace;">Fuente <strong style="color:#E2EAF4;">{
                         violations.extend(
                             _rc.validate_canonical_ctd_polars(pl.from_pandas(chk[need + ex].copy()))
                         )
-                    except Exception:
+                    except (pl.exceptions.PolarsError, TypeError, KeyError) as _exc:
+                        import logging as _logging
+                        _logging.getLogger("app").warning(
+                            "app: Polars contract validation failed (%s); "
+                            "falling back to pandas validator. Results may differ.",
+                            _exc,
+                        )
                         violations.extend(
                             _rc.validate_profile_dataframe(
                                 profile_df,
@@ -1492,8 +1497,11 @@ def main() -> None:
             from ieo.observability.session_audit import append_public_run_journal_entry  # noqa: PLC0415
 
             append_public_run_journal_entry(PROJECT_ROOT, kind="streamlit_dashboard_boot")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug(
+                "app: session audit journal entry failed (non-fatal): %s: %s",
+                type(exc).__name__, exc,
+            )
 
     from viewer_presentation import inject_presentation_css  # noqa: PLC0415
 

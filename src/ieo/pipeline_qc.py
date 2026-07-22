@@ -4,16 +4,25 @@ Paso 02 del pipeline: contrato + Isolation Forest por perfil, en paralelo.
 
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from ieo.observability.anomaly import IF_CONTAMINATION, IsolationForestConfig, detect_anomalies_isolation_forest
+import polars as pl
+
+from ieo.observability.anomaly import (
+    IF_CONTAMINATION,
+    AnomalyOutputs,
+    IsolationForestConfig,
+    detect_anomalies_isolation_forest,
+)
 from ieo.validation.radial_contract import ViolationSeverity, validate_canonical_ctd_polars
 
 ROW_ID_COL = "row_id"
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +53,34 @@ def _outputs_paths(can_path: Path, run_data_dir: Path) -> tuple[Path, Path, Path
     return clean, anom, audit
 
 
+def _run_contract_validation(df_can: pl.DataFrame) -> int:
+    """Returns count of ERROR-severity contract violations. Single responsibility: validation only."""
+    cv = validate_canonical_ctd_polars(df_can)
+    return sum(1 for v in cv if v.severity == ViolationSeverity.ERROR)
+
+
+def _build_if_config(n_rows: int, if_cap: int) -> IsolationForestConfig:
+    """Constructs a reproducible IsolationForestConfig. Single responsibility: configuration only."""
+    return IsolationForestConfig(
+        contamination=IF_CONTAMINATION,
+        random_state=42,
+        n_estimators=effective_n_estimators(n_rows, cap=if_cap),
+    )
+
+
+def _write_qc_outputs(
+    outs: AnomalyOutputs,
+    *,
+    clean_p: Path,
+    anom_p: Path,
+    audit_p: Path,
+) -> None:
+    """Serialises the QC triplet to Parquet. Single responsibility: I/O only."""
+    outs.clean.write_parquet(clean_p)
+    outs.anomalies.write_parquet(anom_p)
+    outs.audit_log.write_parquet(audit_p)
+
+
 def qc_outputs_up_to_date(can_path: Path, run_data_dir: Path) -> bool:
     """True si clean/anomalies/audit existen y no son más viejos que el canónico."""
     clean, anom, audit = _outputs_paths(can_path, run_data_dir)
@@ -69,7 +106,6 @@ def _qc_one_impl(
     if_cap: int,
     if_jobs: int,
 ) -> QcOneResult:
-    import polars as pl
 
     clean_p, anom_p, audit_p = _outputs_paths(can_path, run_data_dir)
 
@@ -77,15 +113,13 @@ def _qc_one_impl(
         n_anom = 0
         try:
             n_anom = pl.scan_parquet(anom_p).select(pl.len()).collect().item()
-        except Exception:
-            pass
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            _log.warning("reuse: no se pudo leer anomaly count de %s: %s", anom_p.name, exc)
         n_contract = 0
         try:
-            df = pl.read_parquet(can_path)
-            cv = validate_canonical_ctd_polars(df)
-            n_contract = sum(1 for v in cv if v.severity == ViolationSeverity.ERROR)
-        except Exception:
-            pass
+            n_contract = _run_contract_validation(pl.read_parquet(can_path))
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            _log.warning("reuse: no se pudo validar contrato en %s: %s", can_path.name, exc)
         return QcOneResult(
             ok=True,
             skipped=True,
@@ -101,15 +135,8 @@ def _qc_one_impl(
         if ROW_ID_COL not in df_can.columns:
             raise ValueError(f"Artefacto canónico sin `{ROW_ID_COL}`: {can_path.name}")
 
-        cv = validate_canonical_ctd_polars(df_can)
-        n_contract_err = sum(1 for v in cv if v.severity == ViolationSeverity.ERROR)
-
-        n_rows = int(df_can.height)
-        cfg = IsolationForestConfig(
-            contamination=IF_CONTAMINATION,
-            random_state=42,
-            n_estimators=effective_n_estimators(n_rows, cap=if_cap),
-        )
+        n_contract_err = _run_contract_validation(df_can)
+        cfg = _build_if_config(int(df_can.height), if_cap)
         outs = detect_anomalies_isolation_forest(
             df=df_can,
             row_id_col=ROW_ID_COL,
@@ -118,10 +145,7 @@ def _qc_one_impl(
             source_file=can_path.name,
             n_jobs=if_jobs,
         )
-
-        outs.clean.write_parquet(clean_p)
-        outs.anomalies.write_parquet(anom_p)
-        outs.audit_log.write_parquet(audit_p)
+        _write_qc_outputs(outs, clean_p=clean_p, anom_p=anom_p, audit_p=audit_p)
 
         return QcOneResult(
             ok=True,
@@ -132,7 +156,8 @@ def _qc_one_impl(
             n_anomalies=len(outs.anomalies),
             error=None,
         )
-    except Exception as exc:
+    except (OSError, ValueError, pl.exceptions.PolarsError, ImportError) as exc:
+        _log.error("QC failed for %s: %s", can_path.name, exc, exc_info=True)
         return QcOneResult(
             ok=False,
             skipped=False,

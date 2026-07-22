@@ -24,8 +24,8 @@ from ieo.io.cnv_radial import classify_cnv_radial, filter_paths_by_radial
 from ieo.io.cnv_reader import CnvReader
 from ieo.transform.canonical_schema import (
     CTDCanonicalSchema,
-    ensure_profundidad_m_pandas,
     normalize_ctd_columns,
+    resolve_depth_source_column,
 )
 from ieo.validation.radial_contract import filter_sampling_dates_pandas
 
@@ -39,6 +39,53 @@ def header_has_ctd_temperature(source: Path) -> bool:
     if not names:
         return False
     return bool(_TEMP_HEADER_COLS & {n.lower() for n in names})
+
+
+def _resolve_station_number(path: Path, pdf: pd.DataFrame) -> pd.DataFrame:
+    """
+    Populates 'estacion' from fallback parsers when not already present in the frame.
+    Single responsibility: station metadata enrichment only.
+    """
+    if "estacion" in pdf.columns:
+        return pdf
+    stn = parse_cnv_station_number_from_path(path)
+    if stn is None:
+        stn = parse_station_from_folder_name(path)
+    if stn is None:
+        stn = parse_station_from_filename(path)
+    pdf["estacion"] = int(stn) if stn is not None else pd.NA
+    return pdf
+
+
+def _read_single_cnv_to_pandas(
+    path: Path,
+    *,
+    reader: CnvReader,
+    schema: CTDCanonicalSchema,
+    staging: Path,
+) -> pd.DataFrame | None:
+    """
+    Reads one .cnv file to a canonical Pandas DataFrame.
+    Returns None if the file has no temperature column.
+    Single responsibility: one-file I/O + schema normalisation only.
+    Raises: OSError, ValueError, polars.exceptions.ComputeError
+    """
+    if not header_has_ctd_temperature(path):
+        return None
+    res = reader.read(path, staging_dir=staging)
+    lf = normalize_ctd_columns(res.lazyframe, schema=schema)
+    frame = lf.collect()
+    if "profundidad_m" not in frame.columns:
+        _depth_src = resolve_depth_source_column(frame.columns)
+        if _depth_src:
+            frame = frame.with_columns(
+                pl.col(_depth_src).cast(pl.Float64, strict=False).alias("profundidad_m")
+            )
+        else:
+            frame = frame.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("profundidad_m")
+            )
+    return frame.to_pandas()
 
 
 def load_radial_profiles_pandas(
@@ -88,27 +135,12 @@ def load_radial_profiles_pandas(
     for path in radial_paths:
         if classify_cnv_radial(path) != radial_id:
             continue
-        if not header_has_ctd_temperature(path):
-            n_skip_no_temp += 1
-            continue
         try:
-            res = reader.read(path, staging_dir=staging)
-            lf = normalize_ctd_columns(res.lazyframe, schema=schema)
-            pdf = lf.collect().to_pandas()
-            pdf.columns = [str(c).lower() for c in pdf.columns]
-            pdf = ensure_profundidad_m_pandas(pdf)
-            if "estacion" not in pdf.columns:
-                stn = parse_cnv_station_number_from_path(path)
-                if stn is None:
-                    stn = parse_station_from_folder_name(path)
-                if stn is None:
-                    stn = parse_station_from_filename(path)
-                if stn is not None:
-                    pdf["estacion"] = int(stn)
-                else:
-                    # Sin ``** Station:`` ni columna de estación: evita KeyError aguas abajo;
-                    # las filas quedan sin estación hasta agregación (dropna en el visor).
-                    pdf["estacion"] = pd.NA
+            pdf = _read_single_cnv_to_pandas(path, reader=reader, schema=schema, staging=staging)
+            if pdf is None:
+                n_skip_no_temp += 1
+                continue
+            pdf = _resolve_station_number(path, pdf)
             pdf["source_file"] = path.name
             frames.append(pdf)
         except (OSError, ValueError, pl.exceptions.ComputeError):

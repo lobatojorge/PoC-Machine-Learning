@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
+import plotly.graph_objects as go
 
 
 def split_dates_values_at_month_gaps(
@@ -12,7 +14,7 @@ def split_dates_values_at_month_gaps(
     valores: pd.Series,
     *,
     max_gap_months: int = 1,
-) -> list[tuple[list[Any], list[float]]]:
+) -> list[tuple[list[datetime], list[float]]]:
     """
     Divide (fecha, valor) en tramos donde el salto entre puntos es <= ``max_gap_months`` meses.
 
@@ -24,8 +26,8 @@ def split_dates_values_at_month_gaps(
         return []
 
     periods = df["fecha"].dt.to_period("M")
-    segments: list[tuple[list[Any], list[float]]] = []
-    x_seg: list[Any] = []
+    segments: list[tuple[list[datetime], list[float]]] = []
+    x_seg: list[datetime] = []
     y_seg: list[float] = []
 
     prev_p = periods.iloc[0]
@@ -44,7 +46,7 @@ def split_dates_values_at_month_gaps(
 
 
 def add_line_markers_by_segments(
-    fig: Any,
+    fig: go.Figure,
     fechas: pd.Series,
     valores: pd.Series,
     *,
@@ -58,8 +60,6 @@ def add_line_markers_by_segments(
     **scatter_kwargs: Any,
 ) -> None:
     """Añade uno o varios ``go.Scatter`` (línea+marcador) sin cruzar huecos temporales."""
-    import plotly.graph_objects as go
-
     segments = split_dates_values_at_month_gaps(fechas, valores, max_gap_months=max_gap_months)
     for i, (xs, ys) in enumerate(segments):
         if not xs:
@@ -81,7 +81,7 @@ def add_line_markers_by_segments(
 
 
 def add_lines_only_by_segments(
-    fig: Any,
+    fig: go.Figure,
     fechas: pd.Series,
     valores: pd.Series,
     *,
@@ -94,8 +94,6 @@ def add_lines_only_by_segments(
     **scatter_kwargs: Any,
 ) -> None:
     """Añade trazos ``lines`` sin marcadores, cortados por huecos."""
-    import plotly.graph_objects as go
-
     segments = split_dates_values_at_month_gaps(fechas, valores, max_gap_months=max_gap_months)
     for i, (xs, ys) in enumerate(segments):
         if not xs:

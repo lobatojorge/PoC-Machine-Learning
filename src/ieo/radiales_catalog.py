@@ -106,7 +106,12 @@ def attach_radial_id(
 
     for col in hint_columns:
         if col in out.columns:
-            out["radial_id"] = out[col].map(lambda v: identify_radial(None if pd.isna(v) else str(v)))
+            out["radial_id"] = (
+                out[col]
+                .astype(str)
+                .where(out[col].notna(), other=None)
+                .map(identify_radial)
+            )
             if out["radial_id"].notna().any():
                 return out
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-import pandas as pd
 import polars as pl
 
 # Profundidad en metros antes que presión (``prSE`` en psi no es profundidad).
@@ -76,17 +75,19 @@ def resolve_depth_source_column(columns: list[str]) -> str | None:
     return _first_present(_DEPTH_SOURCE_CANDIDATES, columns)
 
 
-def ensure_profundidad_m_pandas(df: pd.DataFrame, *, col_out: str = "profundidad_m") -> pd.DataFrame:
-    """Garantiza ``profundidad_m`` copiando desde ``deps`` / ``pr`` / similares cuando falta."""
-    if col_out in df.columns:
-        return df
-    src = resolve_depth_source_column([str(c) for c in df.columns])
-    out = df.copy()
-    if src is not None:
-        out[col_out] = pd.to_numeric(out[src], errors="coerce")
-    else:
-        out[col_out] = pd.NA
-    return out
+def _filter_canonical_dates(lf: pl.LazyFrame, *, fecha_col: str) -> pl.LazyFrame:
+    """
+    Filters rows whose year falls outside the operational sampling window.
+    Single responsibility: date QC gate only. Decoupled from column normalisation.
+    """
+    from ieo.validation.radial_contract import default_thresholds_from_env  # noqa: PLC0415
+    th = default_thresholds_from_env()
+    fcol = pl.col(fecha_col)
+    return lf.filter(
+        fcol.is_null()
+        | (fcol.dt.year().is_between(th.sampling_year_min, th.sampling_year_max, closed="both"))
+    )
+
 
 
 def normalize_ctd_columns(lf: pl.LazyFrame, *, schema: CTDCanonicalSchema) -> pl.LazyFrame:
@@ -173,15 +174,6 @@ def normalize_ctd_columns(lf: pl.LazyFrame, *, schema: CTDCanonicalSchema) -> pl
             out = out.with_columns(pl.lit(None, dtype=pl.Float64).alias(schema.profundidad_m))
 
     if schema.fecha in out.collect_schema().names():
-        from ieo.validation.radial_contract import default_thresholds_from_env  # noqa: PLC0415
-
-        th = default_thresholds_from_env()
-        fcol = pl.col(schema.fecha)
-        out = out.filter(
-            fcol.is_null()
-            | (
-                fcol.dt.year().is_between(th.sampling_year_min, th.sampling_year_max, closed="both")
-            )
-        )
+        out = _filter_canonical_dates(out, fecha_col=schema.fecha)
     return out
 

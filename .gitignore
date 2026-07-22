@@ -80,3 +80,25 @@ htmlcov/
 # ─────────────────────────────────────────────
 .cursor/
 
+# ─────────────────────────────────────────────
+# R / MLOps Ocean Anomaly Detector
+# ─────────────────────────────────────────────
+# Generated data artifacts (reproducible from main.R)
+data/raw/*.parquet
+data/processed/*.parquet
+
+# Trained model artifact
+models/*.rds
+
+# Runtime logs
+logs/
+
+# R session artifacts
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Renv lockfile cache (if adopted later)
+renv/library/
+renv/.cache/

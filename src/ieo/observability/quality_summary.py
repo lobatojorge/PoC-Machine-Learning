@@ -43,7 +43,12 @@ def build_health_summary(
     for c in canonical.columns:
         try:
             null_fracs[c] = float(canonical.select(pl.col(c).is_null().mean()).item())
-        except Exception:
+        except (pl.exceptions.PolarsError, TypeError, AttributeError) as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "quality_summary: could not compute null fraction for column %r: %s",
+                c, exc,
+            )
             continue
     top_nulls = sorted(null_fracs.items(), key=lambda kv: -kv[1])[:10]
 

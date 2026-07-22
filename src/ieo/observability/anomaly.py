@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,10 +14,16 @@ _CATEGORICAL_ID_COLS: frozenset[str] = frozenset(
 )
 
 # Si una columna tiene más de este porcentaje de NaN, se excluye de las features.
-_MAX_NAN_FRACTION_FOR_FEATURE: float = 0.40
+# Configurable: IEO_IF_MAX_NAN_FRACTION (float, 0.0–0.99). Default: 0.40.
+_MAX_NAN_FRACTION_FOR_FEATURE: float = float(
+    os.environ.get("IEO_IF_MAX_NAN_FRACTION", "0.40")
+)
 
 # Valor fijo del pipeline (paso 02). Ver README y docs/arquitectura_validacion_datos.md.
-IF_CONTAMINATION: float = 0.05
+# Configurable: IEO_IF_CONTAMINATION (float, 0.01–0.50). Default: 0.05.
+IF_CONTAMINATION: float = float(
+    os.environ.get("IEO_IF_CONTAMINATION", "0.05")
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,8 +262,7 @@ def detect_anomalies_isolation_forest(
         if len(idx) < 10:
             # Estrato demasiado pequeño: no entrenamos modelo, marcamos como limpias
             continue
-        sub_df = df[feature_cols].to_pandas().iloc[idx]
-        x = sub_df.to_numpy(dtype=float, na_value=np.nan).copy()
+        x = df[feature_cols][idx].to_numpy(dtype=float, fill_value=float("nan")).copy()
         x = _impute_nan_with_median(x)
 
         preds, scores = _run_isolation_forest_on_matrix(x, config=config, n_jobs=n_jobs)

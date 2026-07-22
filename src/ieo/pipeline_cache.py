@@ -65,7 +65,13 @@ def load_manifest(project_root: Path) -> dict[str, Any]:
         return {"schema_version": PIPELINE_SCHEMA_VERSION, "entries": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "pipeline_cache: manifest unreadable (%s: %s); starting from empty cache. "
+            "Path: %s",
+            type(exc).__name__, exc, path,
+        )
         return {"schema_version": PIPELINE_SCHEMA_VERSION, "entries": {}}
     if data.get("schema_version") != PIPELINE_SCHEMA_VERSION:
         return {"schema_version": PIPELINE_SCHEMA_VERSION, "entries": {}}

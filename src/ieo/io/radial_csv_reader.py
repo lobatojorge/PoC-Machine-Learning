@@ -46,7 +46,13 @@ def _ensure_fecha(lf: pl.LazyFrame) -> pl.LazyFrame:
     for c in cols:
         try:
             first = lf.select(pl.col(c).str.extract(r"((?:19|20)\d{2})", 1).first()).collect().item()
-        except Exception:
+        except (pl.exceptions.PolarsError, pl.exceptions.InvalidOperationError, TypeError):
+            first = None
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "radial_csv_reader: unexpected error probing column %r for year: %s", c, exc
+            )
             first = None
         if first is not None and str(first).strip() != "":
             return lf.with_columns(

@@ -83,8 +83,13 @@ def year_from_path_segments(source: Path) -> int | None:
                 y = int(part)
                 if 1950 <= y <= 2035:
                     return y
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "cnv_header: year_from_path_segments failed for %s (%s); "
+            "year will not be corrected from path.",
+            source, exc,
+        )
     return None
 
 

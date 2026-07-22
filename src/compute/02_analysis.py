@@ -11,11 +11,12 @@ operativo legacy; el visor Streamlit usa `decompose_marcos_holdout_last_n` y
 `marcos_iid_bands_on_residuals`.
 """
 
+import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
-from typing import Tuple, Optional, Any, Dict
+from typing import Optional, Union
 import warnings
 
 # Suprimir avisos molestos de statsmodels/pandas para salida limpia en consola
@@ -28,12 +29,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# CONFIGURACIÓN DE HIPERPARÁMETROS
+# CONFIGURACIÓN DE HIPÉRPARÁMETROS
+# Configurable via env vars; defaults match the original hardcoded values.
 # ==========================================
-FORECAST_HORIZON_YEARS = 5       # Años a predecir hacia el futuro
-CONFIDENCE_LEVEL = 0.05           # Alpha para intervalo del 95% (1 - 0.95 = 0.05)
-TARGET_VARIABLE = "temperatura"  # Variable principal a pronosticar
-FOURIER_K = 3                     # Nº de armónicos (K) para estacionalidad mensual continua
+FORECAST_HORIZON_YEARS: int = int(os.environ.get("IEO_FORECAST_HORIZON_YEARS", "5"))
+CONFIDENCE_LEVEL: float = float(os.environ.get("IEO_CONFIDENCE_LEVEL", "0.05"))
+TARGET_VARIABLE: str = os.environ.get("IEO_TARGET_VARIABLE", "temperatura")
+FOURIER_K: int = int(os.environ.get("IEO_FOURIER_K", "3"))
 # ==========================================
 
 def monthly_bin_and_anomaly(
@@ -175,8 +177,10 @@ class OceanForecaster:
     def __init__(self, horizon_months: int = FORECAST_HORIZON_YEARS * 12, alpha: float = CONFIDENCE_LEVEL):
         self.horizon: int = int(horizon_months)
         self.alpha: float = alpha
-        self.model: Any = None
-        self.results: Any = None
+        # model: None before fit(); 'fallback' string when SARIMAX convergence fails; SARIMAX instance otherwise.
+        self.model: Union[sm.tsa.statespace.SARIMAX, str, None] = None
+        # results: None before fit() or in fallback mode; SARIMAXResultsWrapper otherwise.
+        self.results: Optional[object] = None
         self._fallback_mean: float = 0.0
         self._fallback_std: float = 0.0
         self._last_date: Optional[pd.Timestamp] = None
@@ -221,8 +225,8 @@ class OceanForecaster:
                 enforce_invertibility=False
             )
             self.results = self.model.fit(disp=False)
-        except Exception as e:
-            logger.error(f"Error entrenando SARIMAX: {str(e)}. Activando Fallback.")
+        except Exception as exc:
+            logger.error("Error entrenando SARIMAX para serie de %d puntos: %s: %s", len(ts), type(exc).__name__, exc)
             self.model = "fallback"
             self._fallback_mean = ts.mean()
             self._fallback_std = ts.std() if len(ts) > 1 else 0.5
@@ -386,7 +390,7 @@ def decompose_marcos_holdout_last_n(
     col_y: str = "temp_5m",
     holdout_months: int = 12,
     K: int = FOURIER_K,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
     Modelo base tipo Marcos: tendencia lineal + estacionalidad anual (Fourier mensual).
     Reserva los últimos ``holdout_months`` con observación como holdout (sin ajustar).
@@ -400,7 +404,7 @@ def decompose_marcos_holdout_last_n(
     work = work.dropna(subset=[col_fecha]).sort_values(col_fecha)
     obs_dates = sorted(pd.DatetimeIndex(work.loc[work[col_y].notna(), col_fecha]).unique())
     n_obs = len(obs_dates)
-    meta_empty: Dict[str, Any] = {"holdout_months": 0, "cutoff_holdout_start": None, "error": "serie vacía"}
+    meta_empty: dict[str, Any] = {"holdout_months": 0, "cutoff_holdout_start": None, "error": "serie vacía"}
     if n_obs < 4:
         return pd.DataFrame(), meta_empty
 
@@ -451,7 +455,7 @@ def decompose_marcos_holdout_last_n(
             "is_holdout": (grid["fecha"] >= cutoff).to_numpy(),
         }
     )
-    meta_m: Dict[str, Any] = {
+    meta_m: dict[str, Any] = {
         "holdout_months": hm,
         "cutoff_holdout_start": cutoff,
         "fourier_K": int(K),
@@ -465,7 +469,7 @@ def marcos_iid_bands_on_residuals(
     cutoff_holdout_start: pd.Timestamp,
     holdout_months: int,
     fechas: pd.Series | None = None,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
     Bandas de incertidumbre tipo ATAC (visualización) con error iid gaussiano sobre residuos Marcos.
 
@@ -491,7 +495,7 @@ def marcos_iid_bands_on_residuals(
     if not np.isfinite(sigma) or sigma <= 0:
         sigma = 1.0
 
-    meta_a: Dict[str, Any] = {
+    meta_a: dict[str, Any] = {
         "error_model": "marcos_iid_gaussian",
         "residual_sigma": sigma,
         "n_residuals_train": int(rs_clean.size),
@@ -554,7 +558,7 @@ def atac_holdout_bands_on_residuals(
     cutoff_holdout_start: pd.Timestamp,
     holdout_months: int,
     fechas: pd.Series | None = None,
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Alias histórico: bandas sin AR (Marcos + residuos iid)."""
     return marcos_iid_bands_on_residuals(
         rs,
@@ -620,28 +624,20 @@ def main():
     df_final_results.to_csv(output_file, index=False)
     
     # Resumen Ejecutivo
-    print("\n" + "="*80)
-    print(" RESUMEN OPERATIVO: PRONÓSTICO DE SERIES TEMPORALES (MODULO 02) ".center(80, "="))
-    print("="*80)
-    print(f"Estaciones modeladas      : {len(estaciones)}")
-    print(f"Horizonte de proyección   : {FORECAST_HORIZON_YEARS} años")
-    print(f"Resolución temporal       : Mensual (malla MS; 12 bins/año)")
-    print(f"Intervalo de confianza    : {(1-CONFIDENCE_LEVEL)*100:.0f}%")
-    print(f"Variable analizada        : {target_var}")
-    print("-" * 80)
-    print(f"Arquitectura              : Modular (OceanForecaster base class)")
-    print(f"Backend Actual            : ARIMA / Statsmodels StateSpace")
-    print(f"Preparación (Scale-out)   : Lista para inyección de Foundation Models (TimeGPT/PatchTST)")
-    print("-" * 80)
-    print("Qué datos estás viendo en el CSV exportado")
-    print(" - `tipo_dato = histórico`: valores observados agregados a media mensual (si hay varios muestreos en un mes, se promedian).")
-    print(" - `climatologia_mes`      : media histórica para ese mes (enero..diciembre) usando toda la serie disponible.")
-    print(" - `anomalia_mensual`      : `yhat` (mensual) - `climatologia_mes` del mismo mes (también en pronóstico).")
-    print(" - `seasonal_fourier`      : componente estacional continuo (K armónicos) ajustado sobre el histórico mensual.")
-    print(" - `temp_deseasonal_fourier`: `yhat` - `seasonal_fourier` (señal sin ciclo intra‑anual continuo).")
-    print("-" * 80)
-    print(f"[OK] Archivo exportado -> {output_file.relative_to(project_root)}")
-    print("="*80 + "\n")
+    logger.info("="*80)
+    logger.info(" RESUMEN OPERATIVO: PRONÓSTICO DE SERIES TEMPORALES (MODULO 02) ".center(80, "="))
+    logger.info("="*80)
+    logger.info("Estaciones modeladas      : %d", len(estaciones))
+    logger.info("Horizonte de proyección   : %d años", FORECAST_HORIZON_YEARS)
+    logger.info("Resolución temporal       : Mensual (malla MS; 12 bins/año)")
+    logger.info("Intervalo de confianza    : %.0f%%", (1-CONFIDENCE_LEVEL)*100)
+    logger.info("Variable analizada        : %s", target_var)
+    logger.info("-" * 80)
+    logger.info("Arquitectura              : Modular (OceanForecaster base class)")
+    logger.info("Backend Actual            : ARIMA / Statsmodels StateSpace")
+    logger.info("-" * 80)
+    logger.info("[OK] Archivo exportado -> %s", output_file.relative_to(project_root))
+    logger.info("="*80)
 
 if __name__ == "__main__":
     main()

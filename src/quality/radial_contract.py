@@ -613,7 +613,7 @@ def validate_monthly_radial_series(
 
 
 def validate_canonical_ctd_polars(
-    df: Any,
+    df: object,  # pl.DataFrame at runtime; `object` because pl is a conditional import
     *,
     thresholds: RadialContractThresholds | None = None,
 ) -> list[Violation]:
@@ -636,12 +636,12 @@ def validate_canonical_ctd_polars(
             )
         ]
 
-    pdf = df.to_pandas()
     col_prof = "profundidad_m"
     col_val = "temperatura_c"
     col_fecha = "fecha"
     col_estacion = "estacion"
-    if col_prof not in pdf.columns or col_val not in pdf.columns:
+
+    if col_prof not in df.columns or col_val not in df.columns:
         return [
             Violation(
                 ViolationSeverity.WARNING,
@@ -650,14 +650,21 @@ def validate_canonical_ctd_polars(
             )
         ]
 
-    if "cast" in pdf.columns:
+    # Build date-normalised cast key natively in Polars — avoids an extra pd.copy()
+    work_df = df
+    if "cast" in df.columns:
         ck: tuple[str, ...] = ("cast", col_estacion)
-    elif col_fecha in pdf.columns:
-        pdf = pdf.copy()
-        pdf["_qc_day"] = pd.to_datetime(pdf[col_fecha], errors="coerce").dt.normalize()
+    elif col_fecha in df.columns:
+        work_df = df.with_columns(
+            pl.col(col_fecha).cast(pl.Datetime, strict=False).dt.truncate("1d").alias("_qc_day")
+        )
         ck = ("_qc_day", col_estacion)
     else:
         ck = (col_estacion,)
+
+    # Convert only the columns required by the Pandas validators
+    need_cols = list({col_prof, col_val, col_estacion, *ck} & set(work_df.columns))
+    pdf = work_df.select(need_cols).to_pandas()
 
     out = validate_profile_dataframe(
         pdf,
@@ -668,9 +675,11 @@ def validate_canonical_ctd_polars(
         thresholds=th,
         variable_kind="temperature",
     )
-    if col_fecha in pdf.columns:
+    if col_fecha in work_df.columns:
+        # validate_sampling_dates_pandas needs the fecha column — select it separately
+        fecha_pdf = work_df.select([col_fecha]).to_pandas()
         out = list(out)
-        out.extend(validate_sampling_dates_pandas(pdf, col_fecha=col_fecha, thresholds=th))
+        out.extend(validate_sampling_dates_pandas(fecha_pdf, col_fecha=col_fecha, thresholds=th))
         out.sort(key=_violations_sort_key)
     return out
 

@@ -162,8 +162,13 @@ def read_cnv_radial_hints(source: Path, *, max_header_lines: int = 200) -> CnvRa
                 m = CNV_STATION_FIELD_RE.match(st)
                 if m:
                     station_field = m.group(1).strip()
-    except OSError:
-        pass
+    except OSError as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "cnv_radial: could not read header hints for %s (%s); "
+            "radial classification will fall back to filename only.",
+            source.name, exc,
+        )
     # Use ** Latitude/Longitude when available; fall back to * NMEA Latitude/Longitude
     eff_lat = latitude if latitude else nmea_lat
     eff_lon = longitude if longitude else nmea_lon

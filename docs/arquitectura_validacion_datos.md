@@ -1,154 +1,151 @@
-# Arquitectura de validación y auditoría de datos
+# Arquitectura de Validación y Auditoría de Datos
 
-Patrón genérico implementado en IEO Orchestrator; **demostrado con datos Cantábrico** multi-radial en pipeline (`data/cnv/`) y **visor de demo priorizado en radial Gijón**. Pensado para reutilizarse en otras campañas (p. ej. series temporales en volcanología, sensores ambientales, otros transectos costeros).
+**Producto software cerrado y auditable.** Implementado en IEO Orchestrator; demostrado sobre datos Cantábrico multi-radial. Diseño transferible a cualquier dominio de series temporales de sensor (volcanología, calidad de agua, transectos costeros).
 
----
-
-## Principio
-
-Separar cuatro responsabilidades que suelen mezclarse en un único script o en un dashboard:
-
-1. **Transformar** datos crudos a un esquema canónico.
-2. **Validar** contra reglas de dominio (contrato).
-3. **Detectar** valores atípicos sin borrarlos (observabilidad).
-4. **Analizar y visualizar** solo sobre salidas trazables.
+> **ADR-2026-00 — Producto Cerrado:** toda la cadena de procesamiento opera en capas estrictamente aisladas. Ninguna capa accede directamente al estado interno de otra. La comunicación entre capas se realiza exclusivamente mediante Parquet + Apache Arrow IPC (zero-copy).
 
 ---
 
-## Diagrama de capas
+## Principio Rector: Zero-Copy Lakehouse
+
+El motor central es un **Zero-Copy Lakehouse** basado en Polars + Parquet:
+
+- `scan_parquet` / `LazyFrame` como unidad de transporte entre capas — sin materialización intermedia.
+- `Apache Arrow IPC` como protocolo de serialización; elimina toda copia en memoria entre procesos.
+- `.to_pandas()` **prohibido** en el path crítico (ver `.ai_rules.md` regla 10). Conversión a Pandas única y explícita en la capa de presentación Streamlit.
+- Peak RAM objetivo: **< 512 MB** en full-radial run (O5).
+
+---
+
+## Capas del Sistema (OLTP → ETL → OLAP)
+
+El sistema implementa una **separación estricta en tres capas lógicas** más dos capas auxiliares:
+
+| Capa | Rol | Tipo de carga | Tecnología |
+|------|-----|---------------|------------|
+| **OLTP — Landing** | Ingesta y cuarentena de ficheros crudos | Escritura transaccional | `ingest_gate.py` + SHA256 + `reasons.json` |
+| **ETL — Quality/Transform** | Contratos declarativos + normalización canónica | Transformación por lotes | Polars `LazyFrame` + contratos YAML/TOML (O4) |
+| **OLAP — Compute/Storage** | Detección de anomalías + Lakehouse Parquet | Lectura analítica masiva | Isolation Forest → `scan_parquet` zero-copy |
+| **Serving** | Presentación interactiva | Lectura filtrada | Streamlit + Plotly (conversión Pandas explícita y aislada) |
+| **Observability** | Trazabilidad y auditoría de artefactos | Append-only | `provenance.json` + SHA256 + firma GPG (O6) |
+
+---
+
+## Diagrama de Capas
 
 ```mermaid
 flowchart TB
-  subgraph ingest [1_Ingesta]
-    RAW[Fuentes_crudas_CSV_CNV]
-    READ[Readers_pluggables]
-    CAN[Esquema_canonico]
-    RAW --> READ --> CAN
+  subgraph OLTP [OLTP — Landing Layer]
+    RAW[Fuentes_crudas_CNV_CSV]
+    GATE[ingest_gate.py\ncontrol_previo_+_cuarentena]
+    CAN[Esquema_canónico\nPolars_LazyFrame]
+    RAW --> GATE --> CAN
   end
 
-  subgraph prov [2_Provenance]
-    RUN[run_id]
-    META[provenance_json]
-    RUN --> META
+  subgraph ETL [ETL — Quality / Transform Layer]
+    CONTRACT[Data_Contract_as_Code\nYAML_TOML_nativo_Polars]
+    RPT[Informes_checkpoint_HTML]
+    CAN --> CONTRACT --> RPT
   end
 
-  subgraph qc [3_Contrato_de_datos]
-    VAL[Reglas_ERROR_WARNING]
-    RPT[Informes_checkpoint]
-    CAN --> VAL --> RPT
-  end
-
-  subgraph obs [4_Observabilidad]
-    IF[Deteccion_anomalias]
-    CLEAN[Dataset_limpio]
-    ANOM[Dataset_anomalias]
-    CAN --> IF
+  subgraph OLAP [OLAP — Compute / Storage Layer]
+    IF[Isolation_Forest\ncontamination=0.05]
+    TGN[Temporal_Graph_Network\nTGN_corrientes_3D_O3]
+    WASM[WASM_Time_Series\nONNX_wasmtime_O2]
+    CLEAN[ctd_clean.parquet]
+    ANOM[ctd_anomalies.parquet]
+    CONTRACT --> IF
     IF --> CLEAN
     IF --> ANOM
+    CLEAN --> TGN
+    CLEAN --> WASM
   end
 
-  subgraph anal [5_Analisis_validado]
-    SER[Serie_temporal_agregada]
-    MOD[Modelo_Marcos]
-    HOLD[Bandas_iid_holdout]
-    CLEAN --> SER --> MOD --> HOLD
-  end
-
-  subgraph ui [6_Visor_gobernado]
+  subgraph SERVE [Serving / Presentation Layer]
     CARDS[Tarjetas_QC]
-    CHART[Grafica_interactiva]
-    FAQ[Contexto_FAQ_avisos]
+    CHART[Gráfica_interactiva]
     CLEAN --> CARDS
-    HOLD --> CHART
-    VAL --> FAQ
+    CLEAN --> CHART
   end
 
-  ingest --> prov
-  prov --> qc
-  qc --> obs
-  obs --> anal
-  anal --> ui
+  subgraph OBS [Observability Layer]
+    PROV[provenance.json\nSHA256_+_GPG]
+    CLEAN --> PROV
+  end
+
+  OLTP --> ETL --> OLAP --> SERVE
+  OLAP --> OBS
 ```
 
 ---
 
-## Capas en detalle
+## Capa 1: OLTP — Landing / Ingestion
 
-### 1. Ingesta canónica
-
-- **Entrada:** archivos heterogéneos (CSV, futuro `.cnv`, Excel legacy).
-- **Salida:** tabla con columnas fijas (fecha, estación, profundidad, variables).
-- **Código:** `src/ieo/io/`, `src/ieo/transform/canonical_schema.py`, `src/ieo/transform/pipeline.py`.
-
-### 2. Provenance
-
-- Cada ejecución del pipeline genera un `run_id` y metadatos (`provenance.json`).
-- Permite reproducir qué fuente y parámetros produjeron cada figura del visor.
-- **Código:** `src/ieo/runtime/run_id.py`, `src/ieo/runtime/provenance.py`.
-
-### 3. Contrato de datos
-
-- Reglas declarativas en Python con severidad **ERROR** (bloquea gráfica en visor) y **WARNING** (contexto tras interpretar).
-- Incluye comprobación de **rango de años** en la columna canónica `fecha` (metadatos de muestreo plausibles), además de rangos físicos y saltos en perfil/serie mensual.
-- No sustituye el juicio científico; formaliza umbrales acordados.
-- **Código:** `src/ieo/validation/radial_contract.py` · **Doc:** `docs/contrato_datos_radiales.md`.
-
-### 4. Observabilidad
-
-- Isolation Forest multivariante (columnas numéricas con <40 % NaN) con semilla fija (`random_state=42`).
-- `contamination=0.05` en el pipeline (paso 02): se asume hasta un **5 %** de filas atípicas **por estrato** (radial × banda de profundidad). Valor fijo y reproducible; más conservador que el `"auto"` de sklearn (~10 %). Ninguna fila se elimina: las anómalas van a Parquet separado y son trazables.
-- Estratificación opcional por `radial_id` y banda de profundidad: cada estrato entrena su propio modelo, evitando que los extremos válidos de una radial sean percibidos como anómalos desde la perspectiva de otra.
-- Columnas categóricas codificadas como enteros (`estacion`, `cast`) excluidas de las features.
-- Columnas con >40% de NaN excluidas (imputación poco fiable a esa tasa).
-- `top_features` guardado solo para filas anómalas (audit más ligero).
-- Filas anómalas en Parquet separado; trazables en informes HTML.
-- **Código:** `src/ieo/observability/anomaly.py`, paso 02 del pipeline.
-
-### 5. Análisis con validación
-
-- Serie mensual por estación y profundidad objetivo.
-- Descomposición Marcos (tendencia + estacionalidad) + bandas **iid** (σ constante, sin AR); holdout explícito (últimos N meses).
-- Líneas del visor solo entre meses consecutivos (`ieo/reports/plot_gaps.py`).
-- **Código:** `src/02_analysis.py`, `src/atac_monthly_report.py`.
-
-### 6. Visor gobernado
-
-- Consume preferentemente **Parquet limpio de la corrida** filtrando por radial activa (`run/pipeline_runs.py` → `run/app.py`); lectura intensiva desde `.cnv` como respaldo cuando no hay artefactos útiles para esa radial/corrida.
-- Capa de presentación («early warning»): hero + embudo narrado de pasos, mapas contextualizados (`viewer_presentation.py`, `figures_radiales.py`).
-- Selección de estación mediante **widgets nativos Streamlit** (botones/pestañas) para reducir carga por interacciones redundantes Plotly · mapas Plotly siguen disponibles pero no son el disparador único ni el más pesado.
-- FAQs, badges de cobertura/última campaña/fuente, avisos de contrato bajo serie en lenguaje claro cuando aplica.
-
-- **Código:** `run/app.py`.
+- **Entrada:** archivos heterogéneos (`.cnv`, CSV, Excel legacy) en `data/landing/`.
+- **Control previo:** `ingest_gate.py` verifica estructura CTD antes de tocar el fichero. Rechazo → `data/quarantine/<ts>_fichero + reasons.json`.
+- **Salida:** `Polars LazyFrame` con columnas fijas; SHA256 registrado en `provenance.json`.
+- **Aislamiento:** esta capa **no ejecuta ninguna regla de negocio**. Solo acepta o rechaza ficheros.
 
 ---
 
-## Interfaz del contrato (desacoplada del visor)
+## Capa 2: ETL — Quality / Transform (Data Contracts as Code)
 
-Conceptualmente:
+- **Contratos declarativos YAML/TOML** ejecutados nativamente en Polars (Objetivo O4). Sustituyen completamente a Great Expectations (ver ADR-2026-01 en `posicionamiento_trl.md`).
+- Reglas con severidad **ERROR** y **WARNING**; no modifican datos, producen `list[Violation]`.
+- **Código:** `src/ieo/validation/radial_contract.py` + contratos en `src/ieo/validation/contracts/`.
+- Interfaz del contrato (desacoplada del visor):
 
 ```
-entrada: DataFrame | LazyFrame canónico
-salida:  list[Violation]  # code, severity, message, details
+entrada: Polars LazyFrame canónico
+salida:  list[Violation]  # {code, severity, message, row_index, details}
 ```
 
-El visor y el pipeline comparten las mismas funciones; Streamlit solo renderiza `Violation` ya formateadas. Esto permite reutilizar el contrato en CLI, tests (`scripts/e2e_smoke.py`) o, en el futuro, otro frontend web.
+---
+
+## Capa 3: OLAP — Compute / Storage (Zero-Copy Lakehouse)
+
+### Motor actual
+- **Isolation Forest** multivariante (`contamination=0.05`, `random_state=42`), estratificado por `radial_id` y banda de profundidad.
+- Salida: `ctd_clean.parquet`, `ctd_anomalies.parquet`, `ctd_anomaly_audit.parquet` — leídos siempre vía `scan_parquet` (zero-copy).
+
+### Roadmap TGN / WASM (O2, O3)
+
+| Componente | Estado | Target |
+|------------|--------|--------|
+| **WASM Time Series** (ONNX → wasmtime) | 🔵 Roadmap O2 | Sustituye TimeGPT; inferencia local offline, p99 < 200 ms |
+| **Temporal Graph Network** (PyG `TemporalData`) | 🔵 Roadmap O3 | Modela corrientes oceánicas 3D continuas; supera GNN estático en RMSE |
+
+- Los modelos WASM y TGN operan **sobre `ctd_clean.parquet`** leído en zero-copy; no tienen acceso directo a las capas OLTP/ETL.
 
 ---
 
-## Catálogo de dominio (plantilla)
+## Capa 4: Serving / Presentation
 
-`src/ieo/radiales_catalog.py` identifica estaciones y filtra por radial (Cudillero vs Santander, etc.). El mismo patrón sirve para un **catálogo de sensores o estaciones volcánicas**: códigos permitidos, metadatos, reglas de rechazo temprano en ingesta.
+- Streamlit filtrando por `radial_id`.
+- **Única conversión Pandas permitida:** `LazyFrame.collect().to_pandas()` explícita e inmediatamente antes del render.
+- Estado gestionado exclusivamente vía `st.session_state` (`.ai_rules.md` regla 11).
+- **Código:** `src/serving/app.py`.
 
 ---
 
-## Caso demostrado vs producto genérico
+## Capa 5: Observability (Trazabilidad y Auditoría)
 
-| Aspecto | Genérico (arquitectura) | Demo actual (Cantábrico multi-radial) |
-|---------|-------------------------|---------------------------------------|
-| Esquema canónico | Sí | CTD radial |
-| Contrato | Sí | T, S y salinidad vertical, serie mensual con lagunas, series cortas |
-| Visor | Sí | T/S @ 5 m, 3 estaciones Gijón (hero) |
-| Despliegue | Diseño | Streamlit local / URL demo |
+- `provenance.json`: SHA256 de cada fichero fuente, versión Python, plataforma, parámetros de corrida.
+- `run_summary.json`: código de salida, pasos, artefactos, conteo de anomalías.
+- Objetivo O6: firma GPG de artefactos + SLSA Level 2 para reproducibilidad bit-a-bit.
+
+---
+
+## Tabla: Caso Demostrado vs Producto Cerrado
+
+| Aspecto | Arquitectura genérica | Demo actual (Cantábrico) | Producto cerrado (O1–O6) |
+|---------|----------------------|--------------------------|-----------------------------|
+| Orquestación | Micro-agentes tipados | Pipeline secuencial | Micro-agentes compilados (Mypyc) |
+| Contrato | Declarativo YAML/TOML | `radial_contract.py` | Contratos YAML/TOML nativos Polars |
+| Motor analítico | Zero-Copy Lakehouse | Parquet + Polars | `scan_parquet` + Arrow IPC |
+| Modelos | WASM + TGN | Isolation Forest + Marcos | WASM ONNX + TGN (PyG) |
+| Auditoría | SHA256 + GPG | `provenance.json` | SLSA Level 2 + RBAC JWT |
+| Despliegue | Docker cerrado | Streamlit local | Docker + hash-signing |
 
 ---
 
@@ -156,3 +153,4 @@ El visor y el pipeline comparten las mismas funciones; Streamlit solo renderiza 
 
 - TRL y roadmap: [`posicionamiento_trl.md`](posicionamiento_trl.md)
 - Integración web IEO: [`integracion_web_ieo.md`](integracion_web_ieo.md)
+- Catálogo de dominio: [`domain_catalog.md`](domain_catalog.md)

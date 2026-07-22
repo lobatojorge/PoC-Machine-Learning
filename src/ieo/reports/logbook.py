@@ -14,9 +14,12 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +34,8 @@ def _sha256_short(path: Path) -> str:
             while chunk := f.read(1024 * 1024):
                 h.update(chunk)
         return h.hexdigest()[:12]
-    except Exception:
+    except OSError as exc:
+        _log.warning("sha256 no disponible para %s: %s", path.name, exc)
         return "—"
 
 
@@ -48,7 +52,8 @@ def _load_checkpoints(checkpoints_dir: Path) -> list[dict[str, Any]]:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             steps.append(data)
-        except Exception:
+        except (OSError, json.JSONDecodeError) as exc:
+            _log.warning("checkpoint corrupto ignorado %s: %s", p.name, exc)
             continue
     return steps
 
@@ -58,8 +63,8 @@ def _load_provenance(run_root: Path) -> dict[str, Any]:
     if prov_path.exists():
         try:
             return json.loads(prov_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            _log.warning("provenance.json ilegible: %s", exc)
     return {}
 
 
@@ -499,8 +504,8 @@ def _global_stats(steps: list[dict[str, Any]]) -> tuple[int, int, int, int]:
         v = m.get("n_rows_anomalies") or m.get("n_anomalies") or 0
         try:
             n_quar += int(v)
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:
+            _log.debug("valor de cuarentena no convertible a int (%r): %s", v, exc)
     return len(steps), n_ok, n_err, n_quar
 
 
