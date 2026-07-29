@@ -1,1 +1,17 @@
-[![Data Pipeline](https://github.com/lobatojorge/PoC-Machine-Learning/actions/workflows/main.yml/badge.svg)](https://github.com/lobatojorge/PoC-Machine-Learning/actions/workflows/main.yml)
+name: Data Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  auditoria-datos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Comprobación del sistema
+        run: echo "El motor de GitHub Actions está operativo y listo para orquestar R."
