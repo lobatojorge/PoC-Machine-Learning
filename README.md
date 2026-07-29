@@ -1,3 +1,5 @@
+[![Data Pipeline](https://github.com/lobatojorge/PoC-Machine-Learning/actions/workflows/main.yml/badge.svg)](https://github.com/lobatojorge/PoC-Machine-Learning/actions/workflows/main.yml)
+
 # IEO Synthetic Ocean Anomaly Detector
 
 > **MLOps portfolio case study — multivariate anomaly detection in oceanographic sensor streams using Extended Isolation Forest.**
